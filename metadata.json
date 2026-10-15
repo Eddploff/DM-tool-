@@ -1,0 +1,6 @@
+{
+  "name": "JRPG Combat & DM Encounter Tracker",
+  "description": "Tablero de combate estilo JRPG Final Fantasy para DM y jugadores con niebla de HP, tokens personalizables, daño y curación sincronizados en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
