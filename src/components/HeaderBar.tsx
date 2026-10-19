@@ -6,12 +6,16 @@ import {
   VolumeX,
   RotateCcw,
   Columns,
-  ExternalLink,
   Swords,
-  Sparkles,
+  Radio,
+  Copy,
+  Check,
+  Edit,
+  Users,
+  Globe,
 } from 'lucide-react';
 import { Combatant, EncounterState } from '../types/combat.ts';
-import { isSoundEnabled, setSoundEnabled, playMenuBlip } from '../utils/soundEffects.ts';
+import { playMenuBlip } from '../utils/soundEffects.ts';
 
 interface HeaderBarProps {
   currentRole: 'dm' | 'player';
@@ -19,12 +23,17 @@ interface HeaderBarProps {
   encounter: EncounterState;
   players: Combatant[];
   splitView: boolean;
+  activeRoomCode?: string | null;
   onSelectRole: (role: 'dm' | 'player') => void;
   onSelectPlayer: (playerId: string) => void;
   onToggleSplitView: () => void;
   onResetEncounter: () => void;
   onSoundToggle: () => void;
   soundActive: boolean;
+  onOpenRoomLobby: () => void;
+  onOpenTokenSelect?: () => void;
+  onOpenCharacterSheet?: () => void;
+  onOpenGlobalEffects?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -33,55 +42,106 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   encounter,
   players,
   splitView,
+  activeRoomCode,
   onSelectRole,
   onSelectPlayer,
   onToggleSplitView,
   onResetEncounter,
   onSoundToggle,
   soundActive,
+  onOpenRoomLobby,
+  onOpenTokenSelect,
+  onOpenCharacterSheet,
+  onOpenGlobalEffects,
 }) => {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!activeRoomCode) return;
+    playMenuBlip();
+    navigator.clipboard.writeText(activeRoomCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const activePlayerCombatant = players.find((p) => p.id === activePlayerId);
+
   return (
-    <header className="bg-slate-950/90 border-b border-indigo-900/60 backdrop-blur-md sticky top-0 z-40 text-slate-100 shadow-xl">
+    <header className="bg-[#0b0c10]/95 border-b border-[#232635] backdrop-blur-md sticky top-0 z-40 text-slate-200 shadow-xl">
       <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
         {/* Logo and Encounter Title */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 via-blue-600 to-amber-500 p-0.5 shadow-md shadow-blue-900/40 flex items-center justify-center">
-            <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-              <Swords className="w-5 h-5 text-amber-400" />
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-[#161722] border border-purple-500/30 shadow-[0_0_15px_rgba(139,92,246,0.2)] p-0.5 flex items-center justify-center shrink-0">
+            <div className="w-full h-full bg-[#0e1017] rounded-[10px] flex items-center justify-center">
+              <Swords className="w-4 h-4 sm:w-5 sm:h-5 text-purple-300" />
             </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-bold text-base sm:text-lg tracking-wide bg-gradient-to-r from-amber-200 via-yellow-100 to-blue-200 bg-clip-text text-transparent">
-                JRPG Encounter &amp; DM Tracker
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+              <h1 className="font-bold text-sm sm:text-lg tracking-tight text-slate-100 flex items-center gap-1">
+                <span>Obsidian</span>
+                <span className="hidden sm:inline">Encounter</span>
+                <span className="text-purple-400 font-mono text-[10px] sm:text-xs font-semibold">• VTT</span>
               </h1>
-              <span className="px-2 py-0.5 text-xs font-semibold rounded bg-blue-950/80 text-blue-300 border border-blue-800">
-                Ronda {encounter.round}
+              <span className="px-1.5 py-0.2 sm:px-2 sm:py-0.5 text-[10px] sm:text-xs font-mono font-bold rounded bg-[#161824] text-purple-300 border border-purple-500/25 shrink-0">
+                R.{encounter.round}
               </span>
+
+              {/* Room Badge */}
+              <button
+                onClick={() => {
+                  playMenuBlip();
+                  onOpenRoomLobby();
+                }}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-mono font-bold border transition-all cursor-pointer shrink-0 ${
+                  activeRoomCode
+                    ? 'bg-[#111815] border-emerald-500/40 text-emerald-300 hover:border-emerald-400'
+                    : 'bg-[#141520] border-purple-500/30 text-purple-300 hover:border-purple-400'
+                }`}
+                title="Gestión de sala en tiempo real (Firestore)"
+              >
+                <Radio className={`w-3 h-3 ${activeRoomCode ? 'text-emerald-400 animate-pulse' : 'text-purple-400'}`} />
+                {activeRoomCode ? (
+                  <>
+                    <span>SALA: {activeRoomCode}</span>
+                    <span
+                      onClick={handleCopy}
+                      className="p-0.5 hover:text-white rounded"
+                      title="Copiar código de sala"
+                    >
+                      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    </span>
+                  </>
+                ) : (
+                  <span>Sala</span>
+                )}
+              </button>
             </div>
-            <p className="text-xs text-slate-400 truncate max-w-[240px] sm:max-w-md">
+            <p className="text-[11px] text-slate-400 truncate max-w-[180px] sm:max-w-md font-mono hidden xs:block">
               {encounter.title}
             </p>
           </div>
         </div>
 
         {/* Role Switcher & Player Picker */}
-        <div className="flex items-center flex-wrap gap-2">
-          <div className="inline-flex rounded-lg bg-slate-900 border border-slate-800 p-1 shadow-inner">
+        <div className="flex items-center flex-wrap gap-1.5 sm:gap-2">
+          <div className="inline-flex rounded-lg bg-[#11131a] border border-[#232635] p-0.5 sm:p-1 shadow-inner">
             <button
               onClick={() => {
                 playMenuBlip();
                 onSelectRole('dm');
               }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-all ${
+              className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-[11px] sm:text-xs font-semibold flex items-center gap-1 sm:gap-1.5 transition-all cursor-pointer ${
                 currentRole === 'dm'
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  ? 'bg-amber-500/15 text-amber-200 border border-amber-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#181a24]'
               }`}
               aria-label="Cambiar a pantalla de DM"
             >
-              <Shield className="w-3.5 h-3.5 text-amber-400" />
-              <span>Pantalla DM</span>
+              <Shield className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>DM</span>
+              <span className="hidden sm:inline">Screen</span>
             </button>
 
             <button
@@ -89,50 +149,99 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 playMenuBlip();
                 onSelectRole('player');
               }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-all ${
+              className={`px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-[11px] sm:text-xs font-semibold flex items-center gap-1 sm:gap-1.5 transition-all cursor-pointer ${
                 currentRole === 'player'
-                  ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  ? 'bg-purple-600/20 text-purple-200 border border-purple-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#181a24]'
               }`}
               aria-label="Cambiar a pantalla de Jugador"
             >
-              <User className="w-3.5 h-3.5 text-blue-400" />
-              <span>Vista Jugador</span>
+              <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+              <span>Jugador</span>
             </button>
           </div>
 
           {/* Active Character Selector for Player */}
-          {currentRole === 'player' && players.length > 0 && (
-            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1">
-              <span className="text-[11px] text-slate-400 hidden sm:inline">Tu Personaje:</span>
-              <select
-                value={activePlayerId}
-                onChange={(e) => {
-                  playMenuBlip();
-                  onSelectPlayer(e.target.value);
-                }}
-                className="bg-transparent text-xs text-blue-200 font-semibold focus:outline-none cursor-pointer py-0.5"
-                aria-label="Seleccionar personaje activo"
-              >
-                {players.map((p) => (
-                  <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+          {currentRole === 'player' && (
+            <div className="flex items-center gap-1.5 bg-[#12131b] border border-[#232635] rounded-lg px-2 py-1">
+              <span className="text-[11px] text-slate-400 hidden sm:inline font-mono">Ficha:</span>
+              {activePlayerCombatant ? (
+                <div className="flex items-center gap-1.5">
+                  <img
+                    src={activePlayerCombatant.avatar}
+                    alt={activePlayerCombatant.name}
+                    className="w-5 h-5 rounded-full object-cover border border-purple-400"
+                  />
+                  <span className="text-xs text-purple-200 font-bold max-w-[100px] truncate">
+                    {activePlayerCombatant.name}
+                  </span>
+                </div>
+              ) : null}
+
+              {onOpenCharacterSheet && activePlayerCombatant && (
+                <button
+                  onClick={() => {
+                    playMenuBlip();
+                    onOpenCharacterSheet();
+                  }}
+                  className="px-2 py-0.5 rounded bg-[#1b1a2c] hover:bg-purple-900/60 border border-purple-500/30 text-purple-200 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                  title="Editar tus puntos de vida (HP) y resistencias"
+                >
+                  <Edit className="w-3 h-3 text-purple-400" />
+                  <span>Hoja</span>
+                </button>
+              )}
+
+              {onOpenTokenSelect && (
+                <button
+                  onClick={() => {
+                    playMenuBlip();
+                    onOpenTokenSelect();
+                  }}
+                  className="px-2 py-0.5 rounded bg-[#161822] hover:bg-[#202332] border border-slate-700/60 text-slate-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                  title="Seleccionar o crear ficha de personaje"
+                >
+                  <Users className="w-3 h-3 text-purple-400" />
+                  <span>Fichas</span>
+                </button>
+              )}
             </div>
           )}
 
-          {/* Utility Tools: Split View, Sound, Reset, New Tab */}
+          {/* Utility Tools: Global Effects, Split View, Sound, Reset */}
           <div className="flex items-center gap-1">
+            {onOpenGlobalEffects && (
+              <button
+                onClick={() => {
+                  playMenuBlip();
+                  onOpenGlobalEffects();
+                }}
+                title="Efectos Ambientales Globales del Encuentro (Terreno Difícil, Oscuridad, etc.)"
+                aria-label="Efectos Ambientales Globales"
+                className={`p-2 rounded-lg border text-xs flex items-center gap-1 transition-colors cursor-pointer relative ${
+                  encounter.activeGlobalEffects && encounter.activeGlobalEffects.length > 0
+                    ? 'bg-purple-950/80 border-purple-500/60 text-purple-200 shadow-sm shadow-purple-950/50'
+                    : 'bg-[#12131b] border-[#232635] text-slate-400 hover:text-slate-200 hover:bg-[#181a24]'
+                }`}
+              >
+                <Globe className="w-4 h-4 text-purple-400" />
+                <span className="hidden lg:inline text-[11px]">Efectos Globales</span>
+                {encounter.activeGlobalEffects && encounter.activeGlobalEffects.length > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-purple-600 text-white font-mono text-[9px] font-bold flex items-center justify-center shrink-0">
+                    {encounter.activeGlobalEffects.length}
+                  </span>
+                )}
+              </button>
+            )}
+
             <button
               onClick={onToggleSplitView}
               title="Alternar vista dividida (DM y Jugador en paralelo)"
               aria-label="Modo Pantalla Dividida"
-              className={`p-2 rounded-lg border text-xs flex items-center gap-1 transition-colors ${
+              className={`p-2 rounded-lg border text-xs hidden sm:flex items-center gap-1 transition-colors cursor-pointer ${
                 splitView
-                  ? 'bg-indigo-950 border-indigo-500 text-indigo-300'
-                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  ? 'bg-purple-950/60 border-purple-500 text-purple-300 shadow-sm'
+                  : 'bg-[#12131b] border-[#232635] text-slate-400 hover:text-slate-200 hover:bg-[#181a24]'
               }`}
             >
               <Columns className="w-4 h-4" />
@@ -143,7 +252,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               onClick={onSoundToggle}
               title={soundActive ? 'Silenciar audio' : 'Activar audio retro JRPG'}
               aria-label="Alternar sonido retro"
-              className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+              className="p-2 rounded-lg bg-[#12131b] border border-[#232635] text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
             >
               {soundActive ? (
                 <Volume2 className="w-4 h-4 text-emerald-400" />
@@ -154,13 +263,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
             <button
               onClick={() => {
-                if (window.confirm('¿Deseas reiniciar el encuentro y restaurar los datos por defecto?')) {
-                  onResetEncounter();
-                }
+                playMenuBlip();
+                onResetEncounter();
               }}
-              title="Reiniciar encuentro a valores iniciales"
+              title="Reiniciar encuentro: 100% HP, tirada de iniciativas y posiciones iniciales"
               aria-label="Reiniciar encuentro"
-              className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-red-400 hover:border-red-900/50 transition-colors"
+              className="p-2 rounded-lg bg-[#12131b] border border-[#232635] text-slate-400 hover:text-red-400 hover:border-red-900/50 transition-colors cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
             </button>

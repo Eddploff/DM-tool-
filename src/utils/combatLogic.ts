@@ -4,20 +4,62 @@ import type {
   CombatLogEntry,
   EncounterState,
   FloatingNumber,
+  DamageType,
+  AoETemplate,
+  GlobalEffectId,
+  InitiativeRollResult,
 } from '../types/combat.ts';
+import {
+  PHYSICAL_DAMAGE_TYPES,
+  MAGICAL_DAMAGE_TYPES,
+} from '../types/combat.ts';
+import { calculateNetGlobalModifiers } from './environmentalEffects.ts';
+import { INITIAL_COMBATANTS } from './defaultData.ts';
 
 /**
  * Pure logic for applying damage to a combatant.
- * Respects tempHp if available, clamps at 0.
+ * Respects damage resistances (halves damage if resisted), active global environmental effects, and tempHp.
  */
 export function applyDamage(
   combatant: Combatant,
-  damage: number
-): { updated: Combatant; actualDamage: number; wasKilled: boolean } {
-  const safeDamage = Math.max(0, Math.round(damage));
-  const previousHp = combatant.currentHp;
-  let remainingDamage = safeDamage;
-  let newTempHp = combatant.tempHp || 0;
+  damage: number,
+  damageType: DamageType = 'cortante',
+  activeGlobalEffects?: GlobalEffectId[]
+): {
+  updated: Combatant;
+  actualDamage: number;
+  wasKilled: boolean;
+  isResisted: boolean;
+  effectiveDamage: number;
+} {
+  let safeDamage = Math.max(0, Math.round(damage));
+
+  // Apply global environmental damage multipliers (e.g. Heavy Rain halves fire damage to 0.5x, Holy Ground increases radiant)
+  if (activeGlobalEffects && activeGlobalEffects.length > 0) {
+    const { damageMultipliers } = calculateNetGlobalModifiers(activeGlobalEffects);
+    const mult = damageMultipliers[damageType];
+    if (typeof mult === 'number') {
+      safeDamage = Math.max(1, Math.round(safeDamage * mult));
+    }
+  }
+
+  const maxHp = Math.max(1, Number(combatant.maxHp) || 1);
+  const previousHp = Math.max(0, Number(combatant.currentHp) ?? 0);
+  const currentTempHp = Math.max(0, Number(combatant.tempHp) || 0);
+
+  // D&D 5e: Resistance halves the damage received (rounded down)
+  const isResisted = Boolean(
+    combatant.damageResistances &&
+      (combatant.damageResistances.includes(damageType) ||
+        (PHYSICAL_DAMAGE_TYPES.some((p) => p.key === damageType) &&
+          (combatant.damageResistances as string[]).includes('physical')) ||
+        (MAGICAL_DAMAGE_TYPES.some((m) => m.key === damageType) &&
+          (combatant.damageResistances as string[]).includes('magical')))
+  );
+  const effectiveDamage = isResisted ? Math.floor(safeDamage / 2) : safeDamage;
+
+  let remainingDamage = effectiveDamage;
+  let newTempHp = currentTempHp;
 
   if (newTempHp > 0) {
     if (newTempHp >= remainingDamage) {
@@ -29,39 +71,54 @@ export function applyDamage(
     }
   }
 
-  const newHp = Math.max(0, combatant.currentHp - remainingDamage);
-  const actualDamage = (combatant.tempHp || 0) - newTempHp + (previousHp - newHp);
+  const newHp = Math.max(0, previousHp - remainingDamage);
+  const actualDamage = currentTempHp - newTempHp + (previousHp - newHp);
   const wasKilled = previousHp > 0 && newHp === 0;
 
   return {
     updated: {
       ...combatant,
+      maxHp,
       currentHp: newHp,
       tempHp: newTempHp,
     },
     actualDamage,
     wasKilled,
+    isResisted,
+    effectiveDamage,
   };
 }
 
 /**
  * Pure logic for applying healing to a combatant.
- * Clamps to maxHp, cannot exceed maxHp.
+ * Respects global environmental heal bonuses (e.g. Holy ground +2), clamps to maxHp, cannot exceed maxHp.
  */
 export function applyHeal(
   combatant: Combatant,
-  heal: number
+  heal: number,
+  activeGlobalEffects?: GlobalEffectId[]
 ): { updated: Combatant; actualHealed: number; wasRevived: boolean } {
-  const safeHeal = Math.max(0, Math.round(heal));
-  const previousHp = combatant.currentHp;
-  const newHp = Math.min(combatant.maxHp, combatant.currentHp + safeHeal);
+  let safeHeal = Math.max(0, Math.round(Number(heal) || 0));
+
+  if (activeGlobalEffects && activeGlobalEffects.length > 0 && safeHeal > 0) {
+    const { healBonus } = calculateNetGlobalModifiers(activeGlobalEffects);
+    if (healBonus) {
+      safeHeal += healBonus;
+    }
+  }
+
+  const maxHp = Math.max(1, Number(combatant.maxHp) || 1);
+  const previousHp = Math.max(0, Math.min(maxHp, Number(combatant.currentHp) ?? 0));
+  const newHp = Math.min(maxHp, previousHp + safeHeal);
   const actualHealed = newHp - previousHp;
   const wasRevived = previousHp === 0 && newHp > 0;
 
   return {
     updated: {
       ...combatant,
+      maxHp,
       currentHp: newHp,
+      tempHp: Number(combatant.tempHp) || 0,
     },
     actualHealed,
     wasRevived,
@@ -188,12 +245,15 @@ export function createCombatLog(
   type: 'damage' | 'heal' | 'status' | 'system',
   amount: number,
   isCrit: boolean = false,
-  notes?: string
+  notes?: string,
+  damageType?: DamageType,
+  isResisted?: boolean,
+  playerAmount?: number
 ): CombatLogEntry {
   const now = new Date();
   const timestamp = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  return {
+  const entry: CombatLogEntry = {
     id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     timestamp,
     actorName,
@@ -202,8 +262,50 @@ export function createCombatLog(
     type,
     amount,
     isCrit,
-    notes,
   };
+
+  if (notes !== undefined && notes !== '') entry.notes = notes;
+  if (damageType !== undefined) entry.damageType = damageType;
+  if (isResisted !== undefined) entry.isResisted = isResisted;
+  if (playerAmount !== undefined) entry.playerAmount = playerAmount;
+
+  return entry;
+}
+
+/**
+ * Calculates which living combatants fall inside an AoE template.
+ * 1 grid cell = 5 ft.
+ * - 10 ft: 2x2 cells
+ * - 15 ft: 3x3 cells
+ * - 20 ft: 4x4 cells
+ * - 30 ft: 6x6 cells
+ */
+export function getCombatantsInAoE(
+  combatants: Combatant[],
+  aoe: AoETemplate
+): Combatant[] {
+  // Convert feet to grid cell radius / span
+  // 1 cell = 5 ft.
+  // 10ft = 2 cells diameter (radius 1)
+  // 15ft = 3 cells diameter (radius 1.5)
+  // 20ft = 4 cells diameter (radius 2)
+  // 30ft = 6 cells diameter (radius 3)
+  const cellRadius = aoe.sizeFeet / 10;
+
+  return combatants.filter((c) => {
+    if (!c.gridPosition || c.currentHp <= 0) return false;
+    const dx = c.gridPosition.col - aoe.centerCol;
+    const dy = c.gridPosition.row - aoe.centerRow;
+
+    if (aoe.shape === 'square') {
+      // Square AoE: Chebyshev / box distance
+      return Math.abs(dx) <= cellRadius && Math.abs(dy) <= cellRadius;
+    } else {
+      // Circle AoE: Euclidean distance (with 0.35 padding for boundary tiles)
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      return dist <= cellRadius + 0.35;
+    }
+  });
 }
 
 /**
@@ -357,4 +459,196 @@ export function canCombatantActInTurn(params: {
   }
 
   return { allowed: true };
+}
+
+/**
+ * Triggers an automatic initiative dice roll (1d20 + bonus) for all combatants,
+ * returning the roll results and the updated combatants sorted in descending order.
+ */
+export function rollInitiativeForAll(
+  combatants: Combatant[],
+  customRolls?: Record<string, number>
+): {
+  results: InitiativeRollResult[];
+  sortedTurnOrder: string[];
+  updatedCombatants: Combatant[];
+} {
+  const results: InitiativeRollResult[] = combatants.map((c) => {
+    const d20 =
+      customRolls && customRolls[c.id] !== undefined
+        ? customRolls[c.id]
+        : Math.floor(Math.random() * 20) + 1;
+
+    // Use initiativeBonus if set; else attackBonus/2 or 0
+    const bonus = c.initiativeBonus ?? (c.attackBonus ? Math.floor(c.attackBonus / 2) : 0);
+    const total = d20 + bonus;
+
+    return {
+      combatantId: c.id,
+      combatantName: c.name,
+      type: c.type,
+      avatar: c.avatar,
+      jobClass: c.jobClass,
+      d20,
+      bonus,
+      total,
+      isCrit: d20 === 20,
+      isFumble: d20 === 1,
+    };
+  });
+
+  // Sort descending by total initiative. Tie-breakers: higher bonus, then players over enemies
+  results.sort((a, b) => {
+    if (b.total !== a.total) {
+      return b.total - a.total;
+    }
+    if (b.bonus !== a.bonus) {
+      return b.bonus - a.bonus;
+    }
+    if (a.type === 'player' && b.type === 'enemy') return -1;
+    if (a.type === 'enemy' && b.type === 'player') return 1;
+    return a.combatantName.localeCompare(b.combatantName);
+  });
+
+  const sortedTurnOrder = results.map((r) => r.combatantId);
+
+  const updatedCombatants = combatants.map((c) => {
+    const res = results.find((r) => r.combatantId === c.id);
+    return {
+      ...c,
+      initiative: res ? res.total : c.initiative,
+    };
+  });
+
+  return {
+    results,
+    sortedTurnOrder,
+    updatedCombatants,
+  };
+}
+
+/**
+ * Bulletproof helper to calculate safe current HP, max HP, ratio (0 to 1), and integer percentage (0 to 100).
+ * Guaranteed to never return NaN, even if currentHp or maxHp is undefined, null, or string.
+ */
+export function getSafeHpValues(
+  currentHp: unknown,
+  maxHp: unknown
+): { current: number; max: number; ratio: number; percent: number } {
+  const parsedMax = typeof maxHp === 'number' ? maxHp : parseFloat(String(maxHp));
+  const safeMax = !isNaN(parsedMax) && parsedMax > 0 ? Math.round(parsedMax) : 1;
+
+  const parsedCurrent = typeof currentHp === 'number' ? currentHp : parseFloat(String(currentHp));
+  const validCurrent = !isNaN(parsedCurrent) ? Math.round(parsedCurrent) : safeMax;
+  const safeCurrent = Math.max(0, Math.min(safeMax, validCurrent));
+
+  const ratio = safeMax > 0 ? safeCurrent / safeMax : 0;
+  const percent = Math.min(100, Math.max(0, Math.round(ratio * 100)));
+
+  return { current: safeCurrent, max: safeMax, ratio, percent };
+}
+
+/**
+ * Resets encounter completely:
+ * - Restores all combatants to 100% maxHp and removes tempHp.
+ * - Repositions combatants back to their initial tactical formation on the VTT grid.
+ * - Clears transient altered states / concentrations.
+ * - Resets round to 1, turnPhase to 'start', activeTurnIndex to 0.
+ * - Optionally rolls initiative automatically for everyone.
+ */
+export function resetEncounterToFull(
+  encounter: EncounterState,
+  options?: {
+    autoRollInitiative?: boolean;
+    clearStatuses?: boolean;
+    resetFormation?: boolean;
+    customRolls?: Record<string, number>;
+  }
+): {
+  nextEncounter: EncounterState;
+  initiativeResults?: InitiativeRollResult[];
+} {
+  const autoRoll = options?.autoRollInitiative ?? true;
+  const clearStatuses = options?.clearStatuses ?? true;
+  const resetFormation = options?.resetFormation ?? true;
+
+  const enemies = encounter.combatants.filter((c) => c.type === 'enemy');
+  const players = encounter.combatants.filter((c) => c.type === 'player');
+
+  // 1. Reset each combatant to full health, 0 tempHp, cleared states, and default tactical position
+  const healedCombatants: Combatant[] = encounter.combatants.map((c) => {
+    let gridPos = c.gridPosition;
+    if (resetFormation) {
+      const defaultInitial = INITIAL_COMBATANTS.find((x) => x.id === c.id);
+      if (defaultInitial && defaultInitial.gridPosition) {
+        gridPos = { ...defaultInitial.gridPosition };
+      } else if (c.type === 'enemy') {
+        const eIdx = enemies.findIndex((e) => e.id === c.id);
+        const col = 1 + (eIdx % 3);
+        const row = 1 + ((Math.floor(eIdx / 3) * 2) % 6);
+        gridPos = { col, row };
+      } else {
+        const pIdx = players.findIndex((p) => p.id === c.id);
+        const col = 10 + (pIdx % 2);
+        const row = 1 + ((pIdx * 2) % 6);
+        gridPos = { col, row };
+      }
+    }
+
+    const maxHp = Math.max(1, Number(c.maxHp) || 1);
+    return {
+      ...c,
+      maxHp,
+      currentHp: maxHp, // Guaranteed 100% full health
+      tempHp: 0,
+      statusEffects: clearStatuses ? [] : (c.statusEffects || []),
+      isConcentrating: false,
+      isDefending: false,
+      gridPosition: gridPos,
+    };
+  });
+
+  // 2. Either roll fresh initiative or retain current order
+  let finalTurnOrder = [...encounter.turnOrder];
+  let finalCombatants = healedCombatants;
+  let initiativeResults: InitiativeRollResult[] | undefined;
+
+  if (autoRoll && healedCombatants.length > 0) {
+    const rolled = rollInitiativeForAll(healedCombatants, options?.customRolls);
+    initiativeResults = rolled.results;
+    finalTurnOrder = rolled.sortedTurnOrder;
+    finalCombatants = rolled.updatedCombatants;
+  }
+
+  // 3. Reset log entry
+  const resetLog: CombatLogEntry = {
+    id: `log-reset-${Date.now()}`,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    actorName: 'Sistema',
+    targetName: 'Todos los Combatientes',
+    actionName: 'Reinicio de Encuentro',
+    type: 'system',
+    amount: 0,
+    notes: 'Todos los combatientes han sido restaurados al 100% de HP, se han lanzado iniciativas para todos y devuelto a sus posiciones iniciales.',
+  };
+
+  const nextEncounter: EncounterState = {
+    ...encounter,
+    round: 1,
+    activeTurnIndex: 0,
+    turnPhase: 'start',
+    combatPhase: 'active',
+    victoryAchieved: false,
+    isSurpriseRound: false,
+    surpriseSide: null,
+    combatants: finalCombatants,
+    turnOrder: finalTurnOrder,
+    log: [resetLog, ...encounter.log],
+    lastUpdated: Date.now(),
+  };
+
+  return {
+    nextEncounter,
+    initiativeResults,
+  };
 }

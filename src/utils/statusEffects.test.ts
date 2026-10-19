@@ -16,7 +16,6 @@ const mockCombatant: Combatant = {
   avatar: '',
   currentHp: 30,
   maxHp: 30,
-  armorClass: 12,
   attackBonus: 2,
   jobClass: 'Monstruo',
   actions: [],

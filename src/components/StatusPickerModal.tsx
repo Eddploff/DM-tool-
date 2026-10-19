@@ -71,26 +71,26 @@ export const StatusPickerModal: React.FC<StatusPickerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-      <div className="relative w-full max-w-lg bg-slate-950 border-2 border-indigo-600/80 rounded-2xl shadow-2xl p-5 text-slate-100 max-h-[90vh] overflow-y-auto flex flex-col gap-4">
+      <div className="relative w-full max-w-lg bg-[#0e1017]/98 border border-purple-500/30 rounded-2xl shadow-2xl p-5 text-slate-100 max-h-[90vh] overflow-y-auto flex flex-col gap-4 ring-1 ring-white/10">
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-indigo-950">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 bg-indigo-500/20 rounded-lg border border-indigo-500/40">
-              <Sparkles className="w-5 h-5 text-indigo-400" />
+        <div className="flex items-center justify-between pb-3 border-b border-[#232635]">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-[#181926] rounded-xl border border-purple-500/30">
+              <Sparkles className="w-5 h-5 text-purple-400" />
             </div>
             <div>
-              <h3 className="font-bold text-base text-indigo-200">
+              <h3 className="font-bold text-base text-slate-100 font-mono">
                 Asignar Estados Alterados
               </h3>
-              <p className="text-xs text-slate-400">
-                Objetivo: <strong className="text-white">{target.name}</strong> ({target.type === 'enemy' ? 'Enemigo' : 'Aliado'})
+              <p className="text-xs text-slate-400 font-mono">
+                Objetivo: <strong className="text-purple-300">{target.name}</strong> ({target.type === 'enemy' ? 'Enemigo' : 'Aliado'})
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
             aria-label="Cerrar modal de estados"
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#181a26] border border-transparent hover:border-[#282d40] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>

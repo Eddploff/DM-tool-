@@ -112,6 +112,16 @@ export const STATUS_EFFECTS_CATALOG: Record<string, StatusEffectMeta> = {
     borderColor: 'border-purple-600',
     description: 'Atado por energía oscura con capacidades debilitadas.',
   },
+  concentracion: {
+    key: 'concentracion',
+    name: 'Concentración',
+    type: 'buff',
+    icon: '🎯',
+    color: '#38bdf8',
+    badgeBg: 'bg-cyan-950/90 text-cyan-300',
+    borderColor: 'border-cyan-500',
+    description: 'Manteniendo un hechizo que requiere concentración activa (D&D 5e).',
+  },
 };
 
 /**

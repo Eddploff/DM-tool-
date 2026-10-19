@@ -1,14 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Combatant,
-  FloatingNumber,
   BattleEnvironment,
+  FloatingNumber,
+  DamageType,
+  AoEShape,
+  AoESizeFeet,
+  AoETemplate,
+  TurnPhase,
 } from '../types/combat.ts';
-import { getHealthStatus } from '../utils/combatLogic.ts';
+import { getHealthStatus, getCombatantsInAoE, canCombatantActInTurn, getSafeHpValues } from '../utils/combatLogic.ts';
 import { getStatusEffectMeta } from '../utils/statusEffects.ts';
-import { StatusBadgesOverlay } from './StatusBadgesOverlay.tsx';
-import { HearthstoneArrow } from './HearthstoneArrow.tsx';
 import { playMenuBlip } from '../utils/soundEffects.ts';
+import { HearthstoneArrow } from './HearthstoneArrow.tsx';
+import { StatusBadgesOverlay } from './StatusBadgesOverlay.tsx';
+import { TokenAttackEffect } from './TokenAttackEffect.tsx';
 import {
   Heart,
   Shield,
@@ -23,6 +29,13 @@ import {
   Move,
   Crown,
   Swords,
+  Circle,
+  Square,
+  Flame,
+  Zap,
+  ChevronRight,
+  Smartphone,
+  Dices,
 } from 'lucide-react';
 
 interface JRPGEncounterArenaProps {
@@ -32,12 +45,18 @@ interface JRPGEncounterArenaProps {
   floatingNumbers: FloatingNumber[];
   isDMView: boolean;
   activePlayerId?: string;
+  activeTurnCombatantId?: string;
+  currentTurnPhase?: TurnPhase;
   environment: BattleEnvironment;
   onOpenCard?: (combatant: Combatant) => void;
   onInitiateAction?: (actor: Combatant, target: Combatant) => void;
+  onInitiateAoEAction?: (actor: Combatant, targets: Combatant[], aoe: AoETemplate) => void;
   onOpenStatusPicker?: (combatant: Combatant) => void;
   onUpdateCombatantPosition?: (combatantId: string, col: number, row: number) => void;
   onBatchUpdateCombatants?: (updatedCombatants: Combatant[]) => void;
+  onAdvanceTurn?: () => void;
+  onResetEncounter?: () => void;
+  onOpenOrderModal?: () => void;
 }
 
 const GRID_COLS = 14;
@@ -51,13 +70,22 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
   floatingNumbers,
   isDMView,
   activePlayerId,
+  activeTurnCombatantId,
+  currentTurnPhase = 'action',
   environment,
   onOpenCard,
   onInitiateAction,
+  onInitiateAoEAction,
   onOpenStatusPicker,
   onUpdateCombatantPosition,
   onBatchUpdateCombatants,
+  onAdvanceTurn,
+  onResetEncounter,
+  onOpenOrderModal,
 }) => {
+  // Mobile responsive layout view mode ('fit' scales entire grid into mobile portrait viewport)
+  const [isMobileFit, setIsMobileFit] = useState<boolean>(false);
+
   // Hearthstone arrow targeting state
   const [targetingSourceId, setTargetingSourceId] = useState<string | null>(null);
   const [startPoint, setStartPoint] = useState<{ x: number; y: number } | null>(null);
@@ -74,8 +102,27 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
   // Grid styling options (Single clean VTT tabletop grid)
   const [showCoordinates, setShowCoordinates] = useState<boolean>(true);
 
+  // Turn notice toast when someone tries to act out of turn
+  const [turnNotice, setTurnNotice] = useState<string | null>(null);
+
+  // AoE Tool state
+  const [isAoEMode, setIsAoEMode] = useState<boolean>(false);
+  const [aoeShape, setAoeShape] = useState<AoEShape>('circle');
+  const [aoeSizeFeet, setAoeSizeFeet] = useState<AoESizeFeet>(20);
+  const [aoeHoverCenter, setAoeHoverCenter] = useState<{ col: number; row: number } | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const tokenRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // Current turn combatant
+  const currentTurnActor = combatants.find((c) => c.id === activeTurnCombatantId);
+  const permCheck = canCombatantActInTurn({
+    isDM: isDMView,
+    activePlayerId,
+    currentTurnCombatantId: activeTurnCombatantId,
+    currentTurnActorType: currentTurnActor?.type,
+  });
+  const canInteract = permCheck.allowed;
 
   // Ensure every combatant has a valid grid position
   const getPositionFor = (c: Combatant, index: number): { col: number; row: number } => {
@@ -120,6 +167,8 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
         setTargetingSourceId(null);
         setStartPoint(null);
         setHoveredTargetId(null);
+        setIsAoEMode(false);
+        setAoeHoverCenter(null);
       }
     };
 
@@ -132,22 +181,34 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     };
   }, [targetingSourceId]);
 
-  // Close unfolded options menu with Escape
+  // Close unfolded options menu or AoE with Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && unfoldedCombatantId) {
-        setUnfoldedCombatantId(null);
+      if (e.key === 'Escape') {
+        if (unfoldedCombatantId) setUnfoldedCombatantId(null);
+        if (isAoEMode) {
+          setIsAoEMode(false);
+          setAoeHoverCenter(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [unfoldedCombatantId]);
+  }, [unfoldedCombatantId, isAoEMode]);
 
   // Start targeting from a combatant (aiming arrow)
   const startTargeting = (sourceCombatant: Combatant, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+
+    if (!canInteract) {
+      setTurnNotice(permCheck.reason || 'No es tu turno para atacar.');
+      setTimeout(() => setTurnNotice(null), 3500);
+      return;
+    }
+
     playMenuBlip();
     setUnfoldedCombatantId(null);
+    setIsAoEMode(false);
     const elem = tokenRefs.current[sourceCombatant.id];
     if (elem) {
       const rect = elem.getBoundingClientRect();
@@ -168,6 +229,12 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     e.stopPropagation();
     playMenuBlip();
 
+    // If AoE mode is active, clicking detonates AoE
+    if (isAoEMode && aoeHoverCenter) {
+      handleAoEDetonate(aoeHoverCenter.col, aoeHoverCenter.row);
+      return;
+    }
+
     // If we are currently aiming with Hearthstone arrow
     if (targetingSourceId) {
       const source = combatants.find((cb) => cb.id === targetingSourceId);
@@ -185,8 +252,14 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     setUnfoldedCombatantId(c.id);
   };
 
-  // Click on an empty grid square: if a token is unfolded, option to move there
+  // Click on a grid cell
   const handleCellClick = (col: number, row: number) => {
+    // If AoE mode is active, detonate the spell in this cell
+    if (isAoEMode) {
+      handleAoEDetonate(col, row);
+      return;
+    }
+
     if (targetingSourceId) {
       setTargetingSourceId(null);
       setStartPoint(null);
@@ -196,12 +269,16 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
 
     const occupant = cellCombatantMap.get(`${col}-${row}`);
     if (occupant) {
-      // Cell is occupied, handled by token click
       return;
     }
 
     // If an unfolded token is selected, move it to this clicked cell!
     if (unfoldedCombatantId && onUpdateCombatantPosition) {
+      if (!canInteract) {
+        setTurnNotice(permCheck.reason || 'No es tu turno para moverte.');
+        setTimeout(() => setTurnNotice(null), 3500);
+        return;
+      }
       playMenuBlip();
       onUpdateCombatantPosition(unfoldedCombatantId, col, row);
     } else {
@@ -209,8 +286,40 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     }
   };
 
+  // Handle AoE Detonation
+  const handleAoEDetonate = (col: number, row: number) => {
+    playMenuBlip();
+    const template: AoETemplate = {
+      shape: aoeShape,
+      sizeFeet: aoeSizeFeet,
+      centerCol: col,
+      centerRow: row,
+    };
+    const targets = getCombatantsInAoE(combatants, template);
+    const actor =
+      combatants.find((c) => c.id === activeTurnCombatantId) ||
+      combatants.find((c) => c.id === activePlayerId) ||
+      combatants[0];
+
+    if (onInitiateAoEAction && targets.length > 0) {
+      onInitiateAoEAction(actor, targets, template);
+    } else if (targets.length === 0) {
+      setTurnNotice('Ningún combatiente se encontraba dentro del área seleccionada.');
+      setTimeout(() => setTurnNotice(null), 3000);
+    }
+
+    setIsAoEMode(false);
+    setAoeHoverCenter(null);
+  };
+
   // Drag and Drop support
   const handleDragStart = (combatantId: string, e: React.DragEvent) => {
+    if (!canInteract) {
+      e.preventDefault();
+      setTurnNotice(permCheck.reason || 'No es tu turno para moverte.');
+      setTimeout(() => setTurnNotice(null), 3500);
+      return;
+    }
     e.dataTransfer.setData('text/plain', combatantId);
     e.dataTransfer.effectAllowed = 'move';
     setDraggingCombatantId(combatantId);
@@ -229,12 +338,17 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     setDragOverCell(null);
 
     if (combatantId && onUpdateCombatantPosition) {
+      if (!canInteract) {
+        setTurnNotice(permCheck.reason || 'No es tu turno para moverte.');
+        setTimeout(() => setTurnNotice(null), 3500);
+        return;
+      }
       playMenuBlip();
       onUpdateCombatantPosition(combatantId, col, row);
     }
   };
 
-  // Reset tactical formation (Enemies rank left, Players rank right)
+  // Reset tactical formation (Enemies rank left, Players rank right) AND reset HP of everyone to 100%
   const handleResetTacticalFormation = () => {
     playMenuBlip();
     if (!onBatchUpdateCombatants) return;
@@ -243,19 +357,38 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     const players = combatants.filter((c) => c.type === 'player');
 
     const updated = combatants.map((c) => {
+      let gridPos = c.gridPosition;
       if (c.type === 'enemy') {
         const eIdx = enemies.findIndex((e) => e.id === c.id);
         const col = 1 + (eIdx % 3);
         const row = 1 + (Math.floor(eIdx / 3) % 6);
-        return { ...c, gridPosition: { col, row } };
+        gridPos = { col, row };
       } else {
         const pIdx = players.findIndex((p) => p.id === c.id);
         const col = 10 + (pIdx % 2);
         const row = 1 + (pIdx % 6);
-        return { ...c, gridPosition: { col, row } };
+        gridPos = { col, row };
       }
+
+      return {
+        ...c,
+        gridPosition: gridPos,
+        currentHp: c.maxHp, // HP al 100% para todos!
+        tempHp: 0,
+      };
     });
 
+    onBatchUpdateCombatants(updated);
+  };
+
+  // Toggle concentration status on a combatant
+  const handleToggleConcentration = (targetCombatant: Combatant) => {
+    playMenuBlip();
+    if (!onBatchUpdateCombatants) return;
+    const nextState = !targetCombatant.isConcentrating;
+    const updated = combatants.map((c) =>
+      c.id === targetCombatant.id ? { ...c, isConcentrating: nextState } : c
+    );
     onBatchUpdateCombatants(updated);
   };
 
@@ -275,75 +408,88 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     forest: {
       name: 'Bosque Místico',
       icon: '🌲',
-      bgClass: 'bg-gradient-to-b from-teal-950 via-emerald-950 to-green-950',
-      gridBorderClass: 'border-emerald-500/20',
+      bgClass: 'bg-gradient-to-b from-[#0c1210] via-[#101815] to-[#0a0f0d]',
+      gridBorderClass: 'border-emerald-500/15',
       gridCellBg: 'hover:bg-emerald-500/10',
-      groundClass: 'bg-emerald-950/80 border-t border-emerald-500/30 text-emerald-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.14),transparent_70%)]',
+      groundClass: 'bg-[#0f1512]/90 border-t border-emerald-500/20 text-slate-300',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.08),transparent_70%)]',
     },
     dungeon: {
       name: 'Mazmorra Antigua',
       icon: '🏰',
-      bgClass: 'bg-gradient-to-b from-zinc-950 via-stone-900 to-neutral-950',
-      gridBorderClass: 'border-stone-500/25',
-      gridCellBg: 'hover:bg-amber-500/10',
-      groundClass: 'bg-stone-950/80 border-t border-amber-700/30 text-stone-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(245,158,11,0.10),transparent_70%)]',
+      bgClass: 'bg-gradient-to-b from-[#0d0e12] via-[#121319] to-[#090a0d]',
+      gridBorderClass: 'border-slate-500/15',
+      gridCellBg: 'hover:bg-slate-400/10',
+      groundClass: 'bg-[#101117]/90 border-t border-slate-700/30 text-slate-300',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(148,163,184,0.08),transparent_70%)]',
     },
     volcano: {
       name: 'Volcán de Magma',
       icon: '🌋',
-      bgClass: 'bg-gradient-to-b from-orange-950 via-red-950 to-zinc-950',
-      gridBorderClass: 'border-orange-500/20',
-      gridCellBg: 'hover:bg-red-500/15',
-      groundClass: 'bg-red-950/80 border-t border-red-500/30 text-orange-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(239,68,68,0.14),transparent_70%)]',
+      bgClass: 'bg-gradient-to-b from-[#160d0f] via-[#1a0f12] to-[#0d0809]',
+      gridBorderClass: 'border-rose-500/15',
+      gridCellBg: 'hover:bg-rose-500/10',
+      groundClass: 'bg-[#150d0f]/90 border-t border-rose-500/20 text-slate-300',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(225,29,72,0.09),transparent_70%)]',
     },
     plains: {
       name: 'Llanuras de Fabul',
       icon: '🌾',
-      bgClass: 'bg-gradient-to-b from-sky-900 via-indigo-950 to-emerald-950',
-      gridBorderClass: 'border-indigo-400/20',
-      gridCellBg: 'hover:bg-blue-400/10',
-      groundClass: 'bg-indigo-950/80 border-t border-indigo-500/30 text-sky-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.12),transparent_70%)]',
+      bgClass: 'bg-gradient-to-b from-[#0d1017] via-[#121520] to-[#0c0f16]',
+      gridBorderClass: 'border-purple-500/15',
+      gridCellBg: 'hover:bg-purple-500/10',
+      groundClass: 'bg-[#11131b]/90 border-t border-purple-500/20 text-slate-300',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(139,92,246,0.10),transparent_70%)]',
     },
     cave: {
       name: 'Caverna Umbría',
       icon: '🪨',
-      bgClass: 'bg-gradient-to-b from-purple-950 via-slate-950 to-indigo-950',
+      bgClass: 'bg-gradient-to-b from-[#110e19] via-[#151121] to-[#0c0914]',
       gridBorderClass: 'border-purple-500/20',
       gridCellBg: 'hover:bg-purple-500/10',
-      groundClass: 'bg-purple-950/80 border-t border-purple-500/30 text-purple-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(168,85,247,0.14),transparent_70%)]',
+      groundClass: 'bg-[#13101d]/90 border-t border-purple-500/20 text-purple-200',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(168,85,247,0.12),transparent_70%)]',
     },
     castle: {
       name: 'Bastión Imperial',
       icon: '🛡️',
-      bgClass: 'bg-gradient-to-b from-stone-900 via-slate-950 to-stone-950',
-      gridBorderClass: 'border-amber-500/20',
+      bgClass: 'bg-gradient-to-b from-[#111216] via-[#16171e] to-[#0c0d11]',
+      gridBorderClass: 'border-slate-500/20',
       gridCellBg: 'hover:bg-amber-400/10',
-      groundClass: 'bg-slate-950/80 border-t border-amber-600/30 text-amber-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(217,119,6,0.12),transparent_70%)]',
+      groundClass: 'bg-[#14151b]/90 border-t border-amber-600/20 text-amber-200',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(217,119,6,0.08),transparent_70%)]',
     },
     crystal: {
       name: 'Torre de Cristal',
       icon: '💎',
-      bgClass: 'bg-gradient-to-b from-cyan-950 via-blue-950 to-indigo-950',
+      bgClass: 'bg-gradient-to-b from-[#0f111c] via-[#131728] to-[#0b0d16]',
       gridBorderClass: 'border-cyan-400/20',
-      gridCellBg: 'hover:bg-cyan-400/15',
-      groundClass: 'bg-cyan-950/80 border-t border-cyan-400/30 text-cyan-200',
-      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(6,182,212,0.14),transparent_70%)]',
+      gridCellBg: 'hover:bg-cyan-400/10',
+      groundClass: 'bg-[#111522]/90 border-t border-cyan-400/20 text-cyan-200',
+      ambientOverlay: 'bg-[radial-gradient(ellipse_at_top,rgba(6,182,212,0.10),transparent_70%)]',
     },
   };
 
   const currentEnv = envStyles[environment] || envStyles.plains;
   const unfoldedCombatant = combatants.find((c) => c.id === unfoldedCombatantId);
 
+  // Targets currently caught inside AoE preview
+  const affectedAoECombatants =
+    isAoEMode && aoeHoverCenter
+      ? getCombatantsInAoE(combatants, {
+          shape: aoeShape,
+          sizeFeet: aoeSizeFeet,
+          centerCol: aoeHoverCenter.col,
+          centerRow: aoeHoverCenter.row,
+        })
+      : [];
+
   return (
     <div
       ref={containerRef}
-      onClick={() => setUnfoldedCombatantId(null)}
+      onClick={() => {
+        setUnfoldedCombatantId(null);
+      }}
       className={`relative w-full rounded-2xl overflow-hidden border-2 border-indigo-800/60 shadow-2xl transition-all duration-500 ${currentEnv.bgClass} flex flex-col justify-between select-none`}
     >
       {/* Hearthstone Targeting Arrow overlay */}
@@ -358,12 +504,25 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
       {/* Atmospheric ambient lighting layer - clean vignette, no second dot pattern */}
       <div className={`absolute inset-0 ${currentEnv.ambientOverlay} pointer-events-none transition-all duration-500`} />
 
+      {/* Turn Out-of-turn Notification Toast */}
+      {turnNotice && (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-amber-950/95 border-2 border-amber-500 text-amber-200 px-4 py-2 rounded-xl text-xs font-bold shadow-2xl animate-bounce flex items-center gap-2">
+          <span>⚠️ {turnNotice}</span>
+          <button
+            onClick={() => setTurnNotice(null)}
+            className="text-amber-400 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Arena Top Toolbar / Status Bar */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative z-20 px-3 py-2 flex flex-wrap items-center justify-between gap-2 bg-black/50 backdrop-blur-xs border-b border-white/10 text-xs"
+        className="relative z-20 px-3 py-2 flex flex-wrap items-center justify-between gap-2 bg-black/55 backdrop-blur-xs border-b border-white/10 text-xs"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
           <span className="font-bold tracking-wider uppercase font-mono text-slate-200">
             Mapa VTT de Combate
@@ -372,13 +531,26 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
             <span>{currentEnv.icon}</span>
             <span>{currentEnv.name}</span>
           </span>
-          <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-slate-800/80 text-slate-300 border border-slate-700">
-            <span>📐 1 casilla = 1.5m / 5 pies</span>
-          </span>
+
+          {/* Current Turn Indicator in Toolbar */}
+          {currentTurnActor && (
+            <span
+              className={`px-2 py-0.5 rounded-full text-[11px] font-black uppercase flex items-center gap-1 shadow border ${
+                canInteract
+                  ? 'bg-amber-950 text-amber-300 border-amber-500 animate-pulse'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
+              }`}
+            >
+              <span>👑 Turno: {currentTurnActor.name.split(' ')[0]}</span>
+              <span className="font-mono text-[9px] opacity-80">
+                ({currentTurnPhase === 'start' ? 'Inicio' : currentTurnPhase === 'end' ? 'Fin' : 'Acción'})
+              </span>
+            </span>
+          )}
         </div>
 
-        {/* Tabletop Controls */}
-        <div className="flex items-center gap-2 text-[11px]">
+        {/* Tabletop & AoE Controls */}
+        <div className="flex items-center gap-2 text-[11px] flex-wrap">
           {targetingSourceId ? (
             <div className="flex items-center gap-2">
               <span className="animate-pulse font-black text-amber-300 bg-red-950/90 px-3 py-1 rounded-lg border border-red-500 flex items-center gap-1.5 shadow">
@@ -396,16 +568,103 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                 Cancelar
               </button>
             </div>
+          ) : isAoEMode ? (
+            /* 2. ÁREA DE EFECTO (AoE) ACTIVE TOOLBAR */
+            <div className="flex items-center gap-1.5 bg-purple-950/90 border border-purple-500/80 rounded-xl px-2.5 py-1 shadow-lg text-white animate-fade-in flex-wrap">
+              <span className="font-black text-amber-300 flex items-center gap-1 text-[11px]">
+                <Flame className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                <span>PLANTILLA AoE:</span>
+              </span>
+
+              {/* Forma: Círculo vs Cuadrado */}
+              <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-purple-700">
+                <button
+                  type="button"
+                  onClick={() => setAoeShape('circle')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 transition-all ${
+                    aoeShape === 'circle'
+                      ? 'bg-purple-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Circle className="w-3 h-3" />
+                  <span>Círculo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAoeShape('square')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 transition-all ${
+                    aoeShape === 'square'
+                      ? 'bg-purple-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Square className="w-3 h-3" />
+                  <span>Cuadrado</span>
+                </button>
+              </div>
+
+              {/* Tamaño: 10, 15, 20, 30 ft */}
+              <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-purple-700">
+                {[10, 15, 20, 30].map((ft) => (
+                  <button
+                    key={ft}
+                    type="button"
+                    onClick={() => setAoeSizeFeet(ft as AoESizeFeet)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all ${
+                      aoeSizeFeet === ft
+                        ? 'bg-amber-500 text-slate-950 font-black shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {ft} ft
+                  </button>
+                ))}
+              </div>
+
+              {/* Conteo de objetivos en el área */}
+              <span className="px-2 py-0.5 rounded bg-black/60 text-amber-300 border border-amber-500/50 text-[10px] font-bold">
+                🎯 {affectedAoECombatants.length} en área
+              </span>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAoEMode(false);
+                  setAoeHoverCenter(null);
+                }}
+                className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600"
+              >
+                ✕ Cancelar
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 bg-slate-900/80 border border-slate-800">
-                14×8 Casillas (112 Espacios)
-              </span>
+              {/* Botón para activar Daño en Área (AoE) */}
+              <button
+                type="button"
+                onClick={() => {
+                  playMenuBlip();
+                  if (!canInteract) {
+                    setTurnNotice(permCheck.reason || 'No es tu turno para usar daño en área.');
+                    setTimeout(() => setTurnNotice(null), 3500);
+                    return;
+                  }
+                  setIsAoEMode(true);
+                  setUnfoldedCombatantId(null);
+                  setTargetingSourceId(null);
+                }}
+                title="Habilitar plantilla de daño en área (Círculos y Cuadrados 10ft a 30ft estilo D&D)"
+                className="px-2.5 py-1 rounded-lg text-[10px] font-black bg-gradient-to-r from-purple-700 via-indigo-600 to-pink-600 hover:from-purple-600 hover:to-pink-500 text-white border border-purple-400/60 shadow flex items-center gap-1.5 transition-all hover:scale-105 active:scale-95"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-spin" />
+                <span>✨ Daño en Área (AoE)</span>
+              </button>
 
               <button
                 onClick={() => setShowCoordinates(!showCoordinates)}
                 title="Mostrar/ocultar coordenadas A-N y 1-8"
-                className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors flex items-center gap-1 ${
+                className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors flex items-center gap-1 cursor-pointer ${
                   showCoordinates
                     ? 'bg-indigo-900/80 text-indigo-200 border-indigo-600'
                     : 'bg-slate-800/80 text-slate-400 border-slate-700'
@@ -415,14 +674,58 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                 <span>Coords</span>
               </button>
 
-              {onBatchUpdateCombatants && (
+              {/* Botón para alternar ajuste móvil de cuadrícula completa */}
+              <button
+                type="button"
+                onClick={() => {
+                  playMenuBlip();
+                  setIsMobileFit((prev) => !prev);
+                }}
+                title={
+                  isMobileFit
+                    ? 'Modo móvil: Haz clic para volver a tamaño normal deslizable (100%)'
+                    : 'Modo móvil: Ajustar toda la cuadrícula en la pantalla vertical del celular'
+                }
+                className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors flex items-center gap-1 cursor-pointer ${
+                  isMobileFit
+                    ? 'bg-purple-900/90 text-purple-200 border-purple-500 shadow-sm'
+                    : 'bg-slate-800/80 text-slate-300 hover:text-white border-slate-700'
+                }`}
+              >
+                <Smartphone className="w-3 h-3 text-purple-400" />
+                <span>{isMobileFit ? 'Zoom 100%' : 'Ajustar Celular'}</span>
+              </button>
+
+              {isDMView && onOpenOrderModal && (
                 <button
-                  onClick={handleResetTacticalFormation}
-                  title="Reorganizar fichas en formación inicial en la cuadrícula"
-                  className="px-2 py-1 rounded text-[10px] font-medium bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-700/60 flex items-center gap-1 transition-colors"
+                  type="button"
+                  onClick={() => {
+                    playMenuBlip();
+                    onOpenOrderModal();
+                  }}
+                  title="Pedir e ingresar manualmente las iniciativas de la mesa presencial"
+                  className="px-2 py-1 rounded text-[10px] font-bold bg-[#1d1b32] hover:bg-[#2c274a] text-purple-200 border border-purple-500/40 flex items-center gap-1 transition-colors cursor-pointer"
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  <span className="hidden md:inline">Formación Inicial</span>
+                  <Dices className="w-3 h-3 text-purple-400" />
+                  <span>Pedir Iniciativas</span>
+                </button>
+              )}
+
+              {(onResetEncounter || onBatchUpdateCombatants) && (
+                <button
+                  onClick={() => {
+                    playMenuBlip();
+                    if (onResetEncounter) {
+                      onResetEncounter();
+                    } else if (handleResetTacticalFormation) {
+                      handleResetTacticalFormation();
+                    }
+                  }}
+                  title="Reiniciar encuentro: 100% HP, abrir iniciativas manuales y posiciones iniciales"
+                  className="px-2 py-1 rounded text-[10px] font-bold bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-600/60 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3 text-amber-400" />
+                  <span>Reiniciar Encuentro</span>
                 </button>
               )}
             </div>
@@ -430,14 +733,35 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
         </div>
       </div>
 
+      {/* Swipe Guide on Portrait Mobile View */}
+      {!isMobileFit && (
+        <div className="sm:hidden w-full px-3 py-1 bg-[#10121c]/95 border-b border-[#232635] text-[10px] font-mono text-purple-300 flex items-center justify-between">
+          <span className="flex items-center gap-1">↔️ Desliza horizontalmente (Cols A - N)</span>
+          <button
+            onClick={() => setIsMobileFit(true)}
+            className="text-amber-400 font-bold underline cursor-pointer"
+          >
+            Ajustar a pantalla
+          </button>
+        </div>
+      )}
+
       {/* VTT GRID MAP CANVAS */}
-      <div className="relative z-10 p-3 sm:p-5 flex-1 flex flex-col items-center justify-center overflow-x-auto min-h-[460px]">
-        <div className="inline-block min-w-max">
+      <div
+        className={`relative z-10 p-2 sm:p-5 flex-1 flex flex-col items-start sm:items-center overflow-x-auto min-h-[420px] w-full overscroll-x-contain touch-pan-x ${
+          isMobileFit ? 'overflow-x-hidden' : ''
+        }`}
+      >
+        <div
+          className={`w-fit min-w-max pb-3 transition-transform duration-200 origin-top-left sm:origin-top ${
+            isMobileFit ? 'scale-[0.50] sm:scale-100' : 'mx-auto'
+          }`}
+        >
           {/* Top Column Coordinate Headers (A - N) */}
           {showCoordinates && (
             <div className="flex pl-6 mb-1 text-center font-mono text-[11px] font-bold text-slate-300 tracking-wider select-none">
               {COL_LABELS.map((letter) => (
-                <div key={letter} className="w-13 h-5 sm:w-15 sm:h-5 md:w-16 md:h-5 flex items-center justify-center shrink-0">
+                <div key={letter} className="w-12 h-5 sm:w-14 sm:h-5 md:w-16 md:h-5 flex items-center justify-center shrink-0">
                   {letter}
                 </div>
               ))}
@@ -445,7 +769,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
           )}
 
           {/* Grid Rows Container - Clean single outer border */}
-          <div className="border border-white/20 rounded-xl overflow-hidden shadow-2xl bg-slate-950/65 backdrop-blur-[2px]">
+          <div className="border border-white/20 rounded-xl overflow-hidden shadow-2xl bg-slate-950/70 backdrop-blur-[2px]">
             {Array.from({ length: GRID_ROWS }).map((_, rowIndex) => (
               <div key={rowIndex} className="flex">
                 {/* Left Row Coordinate Header (1 - 8) */}
@@ -455,7 +779,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                   </div>
                 )}
 
-                {/* Row Grid Cells - Single crisp internal borders (border-r border-b) */}
+                {/* Row Grid Cells */}
                 <div className="flex">
                   {Array.from({ length: GRID_COLS }).map((_, colIndex) => {
                     const cellKey = `${colIndex}-${rowIndex}`;
@@ -463,32 +787,68 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                     const isOver = dragOverCell?.col === colIndex && dragOverCell?.row === rowIndex;
                     const coordName = `${COL_LABELS[colIndex]}${rowIndex + 1}`;
 
+                    // Check if this cell is inside active AoE template
+                    const cellRadius = aoeSizeFeet / 10;
+                    const dx = aoeHoverCenter ? colIndex - aoeHoverCenter.col : 999;
+                    const dy = aoeHoverCenter ? rowIndex - aoeHoverCenter.row : 999;
+                    const isCellInAoE = Boolean(
+                      isAoEMode &&
+                        aoeHoverCenter &&
+                        (aoeShape === 'square'
+                          ? Math.abs(dx) <= cellRadius && Math.abs(dy) <= cellRadius
+                          : Math.sqrt(dx * dx + dy * dy) <= cellRadius + 0.35)
+                    );
+                    const isAoEEpicenter =
+                      isAoEMode &&
+                      aoeHoverCenter &&
+                      aoeHoverCenter.col === colIndex &&
+                      aoeHoverCenter.row === rowIndex;
+
+                    const isActiveTurn = combatant && combatant.id === activeTurnCombatantId;
+                    const isCombatantInAoE = Boolean(combatant && isCellInAoE);
+
                     return (
                       <div
                         key={colIndex}
                         onClick={() => handleCellClick(colIndex, rowIndex)}
+                        onMouseEnter={() => {
+                          if (isAoEMode) {
+                            setAoeHoverCenter({ col: colIndex, row: rowIndex });
+                          }
+                        }}
                         onDragOver={(e) => handleDragOver(colIndex, rowIndex, e)}
                         onDrop={(e) => handleDrop(colIndex, rowIndex, e)}
-                        className={`relative w-13 h-13 sm:w-15 sm:h-15 md:w-16 md:h-16 border-r border-b border-white/10 transition-colors flex items-center justify-center shrink-0 ${
-                          isOver
-                            ? 'bg-amber-500/25 ring-2 ring-amber-400 ring-inset'
-                            : currentEnv.gridCellBg
+                        className={`relative w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 border-r border-b transition-colors flex items-center justify-center shrink-0 ${
+                          isCellInAoE
+                            ? 'bg-purple-600/35 border-purple-400/80 ring-1 ring-purple-400/60'
+                            : isOver
+                            ? 'bg-amber-500/25 ring-2 ring-amber-400 ring-inset border-white/10'
+                            : `border-white/10 ${currentEnv.gridCellBg}`
                         }`}
                       >
                         {/* Subtle coordinate watermark in top-left of cell */}
-                        {showCoordinates && (
+                        {showCoordinates && !isCellInAoE && (
                           <span className="absolute top-0.5 left-1 text-[8px] sm:text-[9px] font-mono text-white/20 select-none pointer-events-none">
                             {coordName}
                           </span>
                         )}
 
-                        {/* RENDER ONLY CIRCULAR TOKEN IF OCCUPIED */}
+                        {/* AoE Epicenter Marker */}
+                        {isAoEEpicenter && (
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                            <span className="text-[10px] font-black font-mono text-amber-300 bg-purple-950/90 px-1 py-0.5 rounded border border-amber-400 shadow animate-pulse">
+                              {aoeSizeFeet}ft
+                            </span>
+                          </div>
+                        )}
+
+                        {/* RENDER ONLY CIRCULAR TOKEN IF OCCUPIED - MATHEMATICALLY CENTERED */}
                         {combatant && (
                           <div
                             ref={(el) => {
                               tokenRefs.current[combatant.id] = el;
                             }}
-                            draggable={true}
+                            draggable={canInteract}
                             onDragStart={(e) => handleDragStart(combatant.id, e)}
                             onClick={(e) => handleTokenClick(combatant, e)}
                             onMouseEnter={() => {
@@ -497,60 +857,82 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                             onMouseLeave={() => {
                               if (targetingSourceId) setHoveredTargetId(null);
                             }}
-                            className="relative group cursor-pointer flex flex-col items-center justify-center z-20"
+                            className="relative group cursor-pointer flex items-center justify-center w-full h-full z-20"
                           >
-                            {/* Target Reticle Crosshair Indicator if Selected */}
-                            {selectedTargetId === combatant.id && !targetingSourceId && (
-                              <div className="absolute -top-3 z-30 bg-red-600 text-white rounded-full p-0.5 shadow-lg animate-bounce ring-2 ring-white/50">
-                                <Crosshair className="w-3 h-3" />
-                              </div>
-                            )}
+                            {/* Active Attack Visual Animation on Target Token (Espadazo, Fueguito, Rayo, etc. + Brillo) */}
+                            {floatingNumbers
+                              .filter((f) => f.targetId === combatant.id && f.type === 'damage')
+                              .map((fl) => (
+                                <TokenAttackEffect
+                                  key={`fx-${fl.id}`}
+                                  damageType={fl.damageType}
+                                  amount={fl.amount}
+                                />
+                              ))}
 
                             {/* Floating Numbers (Damage / Heal) */}
                             {floatingNumbers
                               .filter((f) => f.targetId === combatant.id)
-                              .map((fl) => (
-                                <div
-                                  key={fl.id}
-                                  className={`absolute -top-8 left-1/2 -translate-x-1/2 z-40 font-black text-sm sm:text-base pointer-events-none drop-shadow-[0_2px_6px_rgba(0,0,0,1)] animate-bounce ${
-                                    fl.type === 'heal'
-                                      ? 'text-emerald-300'
-                                      : fl.type === 'crit'
-                                      ? 'text-yellow-300 scale-125'
-                                      : 'text-red-400'
-                                  }`}
-                                >
-                                  {fl.type === 'heal' ? `+${fl.amount}` : `-${fl.amount}`}
-                                </div>
-                              ))}
+                              .map((fl) => {
+                                // Para jugadores: siempre mostrar el daño completo sin mitigar para no revelar si el enemigo es resistente
+                                const displayNum =
+                                  !isDMView && fl.playerDisplayAmount !== undefined
+                                    ? fl.playerDisplayAmount
+                                    : fl.amount;
+
+                                return (
+                                  <div
+                                    key={fl.id}
+                                    className={`absolute -top-8 left-1/2 -translate-x-1/2 z-50 font-black text-sm sm:text-base pointer-events-none drop-shadow-[0_2px_6px_rgba(0,0,0,1)] animate-bounce flex items-center gap-1 ${
+                                      fl.type === 'heal'
+                                        ? 'text-emerald-300'
+                                        : fl.type === 'crit'
+                                        ? 'text-yellow-300 scale-125'
+                                        : 'text-red-400'
+                                    }`}
+                                  >
+                                    <span>{fl.type === 'heal' ? `+${displayNum}` : `-${displayNum}`}</span>
+                                    {isDMView &&
+                                      fl.playerDisplayAmount !== undefined &&
+                                      fl.playerDisplayAmount !== fl.amount && (
+                                        <span className="text-[10px] font-bold text-amber-300 bg-amber-950/80 px-1 rounded border border-amber-600">
+                                          ½
+                                        </span>
+                                      )}
+                                  </div>
+                                );
+                              })}
 
                             {/* Mini Status Effect Icons floating directly above token */}
                             {combatant.statusEffects && combatant.statusEffects.length > 0 && (
-                              <div className="absolute -top-3 flex items-center gap-0.5 z-30 pointer-events-none">
-                                {combatant.statusEffects.slice(0, 3).map((st) => {
+                              <div className="absolute -top-3.5 flex items-center gap-0.5 z-30 pointer-events-none">
+                                {combatant.statusEffects.slice(0, 2).map((st) => {
                                   const meta = getStatusEffectMeta(st);
                                   return (
                                     <span
                                       key={st}
                                       title={meta.name}
-                                      className="w-4 h-4 rounded-full bg-slate-950/95 border border-white/40 flex items-center justify-center text-[10px] shadow"
+                                      className="w-3.5 h-3.5 rounded-full bg-slate-950/95 border border-white/40 flex items-center justify-center text-[9px] shadow"
                                     >
                                       {meta.icon}
                                     </span>
                                   );
                                 })}
-                                {combatant.statusEffects.length > 3 && (
-                                  <span className="w-4 h-4 rounded-full bg-indigo-950 text-indigo-200 border border-indigo-400 text-[8px] font-bold flex items-center justify-center shadow">
-                                    +{combatant.statusEffects.length - 3}
-                                  </span>
-                                )}
                               </div>
                             )}
 
-                            {/* Circular VTT Token */}
+                            {/* Circular VTT Token - DEAD CENTER IN CELL */}
                             <div
-                              className={`relative w-10 h-10 sm:w-11 sm:h-11 md:w-12 md:h-12 rounded-full p-0.5 transition-transform duration-200 group-hover:scale-110 active:scale-95 ${
-                                hoveredTargetId === combatant.id && targetingSourceId !== combatant.id
+                              className={`relative w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-full p-0.5 transition-all duration-200 group-hover:scale-110 active:scale-95 flex items-center justify-center ${
+                                floatingNumbers.some((f) => f.targetId === combatant.id && f.type === 'damage')
+                                  ? 'animate-token-shake'
+                                  : ''
+                              } ${
+                                isActiveTurn
+                                  ? 'ring-4 ring-amber-400 shadow-[0_0_24px_rgba(251,191,36,0.95)] animate-pulse'
+                                  : isCombatantInAoE
+                                  ? 'ring-4 ring-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.9)] animate-pulse'
+                                  : hoveredTargetId === combatant.id && targetingSourceId !== combatant.id
                                   ? 'ring-4 ring-red-500 scale-125 shadow-2xl'
                                   : unfoldedCombatantId === combatant.id
                                   ? 'ring-4 ring-amber-400 shadow-2xl scale-105'
@@ -564,61 +946,106 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                               <img
                                 src={combatant.avatar}
                                 alt={combatant.name}
-                                className="w-full h-full rounded-full object-cover bg-slate-950"
+                                className="w-full h-full rounded-full object-cover bg-slate-950 pointer-events-none"
                               />
+
+                              {/* Ping halo for active turn */}
+                              {isActiveTurn && (
+                                <div className="absolute -inset-1 rounded-full bg-amber-400/35 animate-ping pointer-events-none" />
+                              )}
 
                               {/* Skull overlay if defeated */}
                               {combatant.currentHp <= 0 && (
                                 <div className="absolute inset-0 bg-black/60 rounded-full flex items-center justify-center">
-                                  <Skull className="w-6 h-6 text-red-500 animate-pulse" />
+                                  <Skull className="w-5 h-5 text-red-500 animate-pulse" />
                                 </div>
                               )}
 
-                              {/* Quick ATACAR button directly on token */}
-                              {!targetingSourceId && combatant.currentHp > 0 && (isDMView || combatant.type === 'player') && (
+                              {/* Temp HP Shield Badge if tempHp > 0 */}
+                              {combatant.tempHp && combatant.tempHp > 0 ? (
+                                <span
+                                  title={`Puntos de Vida Temporales: +${combatant.tempHp}`}
+                                  className="absolute -top-1.5 -left-1.5 z-35 bg-cyan-500 text-slate-950 font-black text-[7.5px] sm:text-[8px] px-1 py-0.2 rounded-full border border-cyan-200 shadow flex items-center gap-0.5"
+                                >
+                                  <Shield className="w-2 h-2 fill-slate-950" />
+                                  <span>+{combatant.tempHp}</span>
+                                </span>
+                              ) : null}
+
+                              {/* Concentration indicator badge on token if concentrating */}
+                              {combatant.isConcentrating && (
+                                <span
+                                  title={`${combatant.name} está concentrado/a en un hechizo`}
+                                  className="absolute -top-2 -right-1 z-35 bg-purple-950 text-amber-300 font-mono text-[7px] font-black px-1.5 py-0.2 rounded-full border border-purple-400 shadow flex items-center gap-0.5 animate-pulse"
+                                >
+                                  <span>🧘 Conc.</span>
+                                </span>
+                              )}
+
+                              {/* Resistance indicator badge on token: ONLY if isDMView or friendly player */}
+                              {(isDMView || combatant.type === 'player') && combatant.damageResistances && combatant.damageResistances.length > 0 && (
+                                <span
+                                  title={`Resistencias: ${combatant.damageResistances.join(', ')}`}
+                                  className="absolute -bottom-1 -left-1 z-35 bg-slate-950 text-amber-300 font-mono text-[7px] px-1 rounded-full border border-amber-600 shadow"
+                                >
+                                  🛡️½
+                                </span>
+                              )}
+
+                              {/* Quick ATACAR button directly on token (only if canInteract) */}
+                              {canInteract && !targetingSourceId && !isAoEMode && combatant.currentHp > 0 && (isDMView || combatant.type === 'player') && (
                                 <button
                                   onClick={(e) => startTargeting(combatant, e)}
                                   title="ATACAR (apuntar flecha hacia el objetivo)"
-                                  className="absolute -bottom-1 -right-1 p-1 bg-gradient-to-br from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white rounded-full shadow-lg border-2 border-slate-950 transition-transform active:scale-90 flex items-center justify-center cursor-pointer z-30"
+                                  className="absolute -bottom-1 -right-1 p-0.5 bg-gradient-to-br from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white rounded-full shadow-lg border border-slate-950 transition-transform active:scale-90 flex items-center justify-center cursor-pointer z-30"
                                 >
                                   <Swords className="w-3 h-3" />
                                 </button>
                               )}
                             </div>
 
-                            {/* Mini Compact Name Label beneath circle */}
-                            <div className="mt-0.5 px-1 py-0 rounded-full bg-slate-950/85 border border-white/10 max-w-[50px] sm:max-w-[56px] text-[8px] sm:text-[9px] font-bold text-slate-200 truncate text-center pointer-events-none shadow">
-                              {combatant.name.split(' ')[0]}
-                            </div>
-
-                            {/* Mini Health Status representation */}
-                            {isDMView ? (
-                              <div className="w-9 sm:w-10 h-1 mt-0.5 bg-slate-900 rounded-full overflow-hidden border border-slate-700 pointer-events-none">
-                                <div
-                                  className="h-full bg-gradient-to-r from-red-600 via-amber-500 to-emerald-500"
-                                  style={{
-                                    width: `${Math.max(
-                                      0,
-                                      Math.min(100, (combatant.currentHp / combatant.maxHp) * 100)
-                                    )}%`,
-                                  }}
-                                />
+                            {/* Active Turn Floating Crown Tag */}
+                            {isActiveTurn && (
+                              <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-40 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-[7.5px] px-1.5 py-0.2 rounded-full uppercase tracking-wider shadow-lg flex items-center gap-0.5 animate-bounce pointer-events-none whitespace-nowrap">
+                                <Sparkles className="w-2.5 h-2.5 fill-slate-950" />
+                                <span>TURNO</span>
                               </div>
-                            ) : (
-                              // Fog-of-war colored dot for players
-                              <div
-                                title={getHealthStatus(combatant.currentHp, combatant.maxHp).label}
-                                className={`w-2 h-2 mt-0.5 rounded-full border border-black/50 shadow pointer-events-none ${
-                                  combatant.currentHp <= 0
-                                    ? 'bg-slate-600'
-                                    : combatant.currentHp / combatant.maxHp > 0.5
-                                    ? 'bg-emerald-400'
-                                    : combatant.currentHp / combatant.maxHp > 0.25
-                                    ? 'bg-amber-400'
-                                    : 'bg-red-500'
-                                }`}
-                              />
                             )}
+
+                            {/* Mini Name Label & Health Status: Absolutely positioned at bottom so it DOES NOT disturb vertical centering */}
+                            <div className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 flex flex-col items-center z-30 pointer-events-none">
+                              <div className="px-1 py-0 rounded-full bg-slate-950/90 border border-white/15 max-w-[50px] sm:max-w-[56px] text-[7.5px] sm:text-[8px] font-bold text-slate-200 truncate text-center shadow">
+                                {combatant.name.split(' ')[0]}
+                              </div>
+                              {/* Mini Health Bar representation - Solo visible para el DM o para el propio jugador asignado */}
+                              {(() => {
+                                const canSeeHpBar = isDMView || Boolean(activePlayerId && combatant.id === activePlayerId);
+                                if (!canSeeHpBar) return null;
+
+                                const { current: safeCurrent, max: safeMax, percent: hpPercent } = getSafeHpValues(
+                                  combatant.currentHp,
+                                  combatant.maxHp
+                                );
+
+                                return (
+                                  <div
+                                    className="w-9 sm:w-11 h-1.5 mt-0.5 bg-[#090b10] rounded-full overflow-hidden border border-white/20 shadow-sm"
+                                    title={`Salud: ${safeCurrent} / ${safeMax} (${hpPercent}%)`}
+                                  >
+                                    <div
+                                      className={`h-full transition-all duration-300 ${
+                                        hpPercent > 50
+                                          ? 'bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.8)]'
+                                          : hpPercent > 25
+                                          ? 'bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.8)]'
+                                          : 'bg-red-500 animate-pulse shadow-[0_0_4px_rgba(239,68,68,0.8)]'
+                                      }`}
+                                      style={{ width: `${hpPercent}%` }}
+                                    />
+                                  </div>
+                                );
+                              })()}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -631,93 +1058,170 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
         </div>
       </div>
 
-      {/* UNFOLDED TOKEN OPTIONS PANEL (Floating Card directly in viewport for instant visibility) */}
+      {/* RIGHT-SIDE TURN ADVANCE ARROW (Visible en tablet/desktop al lado derecho del mapa VTT) */}
+      {onAdvanceTurn && (
+        <aside
+          className="hidden sm:flex absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-30 flex-col items-center pointer-events-auto select-none"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              playMenuBlip();
+              onAdvanceTurn();
+            }}
+            title="Pasar al Siguiente Turno en el combate"
+            aria-label="Pasar Turno"
+            className="group flex flex-col items-center gap-1.5 p-2 sm:p-2.5 rounded-2xl bg-[#0e1017]/95 hover:bg-[#181a26] border border-purple-500/30 hover:border-purple-400 shadow-[0_8px_32px_rgba(0,0,0,0.85)] hover:shadow-[0_0_28px_rgba(168,85,247,0.45)] backdrop-blur-md transition-all duration-200 active:scale-95 cursor-pointer text-slate-200 hover:text-white ring-1 ring-white/5 hover:ring-purple-500/30"
+          >
+            <span className="text-[10px] font-mono uppercase tracking-wider text-purple-300 font-bold hidden sm:block">
+              Turno
+            </span>
+            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-purple-950/70 group-hover:bg-purple-600 border border-purple-500/40 flex items-center justify-center transition-all group-hover:scale-110 shadow-inner">
+              <ChevronRight className="w-6 h-6 text-purple-200 group-hover:text-white transition-transform group-hover:translate-x-0.5" />
+            </div>
+            <span className="text-[9px] font-mono text-slate-400 group-hover:text-purple-200 font-medium hidden sm:block">
+              Pasar ➔
+            </span>
+          </button>
+        </aside>
+      )}
+
+      {/* UNFOLDED TOKEN OPTIONS PANEL (Sleek Obsidian Floating Card in viewport) */}
       {unfoldedCombatant && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 w-[94%] max-w-3xl p-3.5 sm:p-4 bg-slate-900/98 backdrop-blur-lg rounded-2xl border-2 border-amber-500 shadow-[0_15px_60px_rgba(0,0,0,0.95)] ring-2 ring-amber-400/40 animate-fade-in flex flex-col md:flex-row items-center justify-between gap-3.5"
+          className="fixed bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 z-50 w-[96%] max-w-3xl max-h-[85vh] overflow-y-auto p-3 sm:p-4 bg-[#0e1017]/98 backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-[0_20px_60px_rgba(0,0,0,0.95)] ring-1 ring-white/10 animate-fade-in flex flex-col md:flex-row items-center justify-between gap-3"
         >
           {/* Combatant Snapshot Info */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-3 shrink-0 w-full md:w-auto">
             <div className="relative shrink-0">
               <img
                 src={unfoldedCombatant.avatar}
                 alt={unfoldedCombatant.name}
-                className={`w-14 h-14 rounded-full object-cover border-2 shadow-lg ${
-                  unfoldedCombatant.type === 'enemy' ? 'border-red-500 ring-2 ring-red-950' : 'border-blue-400 ring-2 ring-blue-950'
+                className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover border-2 shadow-lg ${
+                  unfoldedCombatant.type === 'enemy' ? 'border-red-500/80 ring-2 ring-red-950/60' : 'border-purple-400 ring-2 ring-purple-950/60'
                 }`}
               />
               <span
-                className={`absolute -bottom-1 -right-1 px-1.5 py-0.2 rounded-full text-[9px] font-black uppercase border shadow ${
+                className={`absolute -bottom-1 -right-1 px-1.5 py-0.2 rounded-full text-[9px] font-bold uppercase border shadow font-mono ${
                   unfoldedCombatant.type === 'enemy'
-                    ? 'bg-red-950 text-red-300 border-red-700'
-                    : 'bg-blue-950 text-blue-300 border-blue-700'
+                    ? 'bg-red-950 text-red-300 border-red-700/60'
+                    : 'bg-purple-950 text-purple-300 border-purple-700/60'
                 }`}
               >
                 {unfoldedCombatant.type === 'enemy' ? 'Enemigo' : 'Héroe'}
               </span>
             </div>
 
-            <div>
+            <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-black text-base text-slate-100 whitespace-nowrap">
+                <h3 className="font-bold text-sm sm:text-base text-slate-100 truncate">
                   {unfoldedCombatant.name}
                 </h3>
                 {unfoldedCombatant.id === activePlayerId && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-950 text-emerald-300 border border-emerald-500 flex items-center gap-1 shadow">
-                    🌟 Tu Ficha
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 shadow shrink-0">
+                    <span>🌟 Tu Ficha</span>
                   </span>
                 )}
-                <span className="text-xs font-mono font-bold text-amber-300 px-2 py-0.5 rounded bg-amber-950/70 border border-amber-700/60 shrink-0">
-                  🛡️ CA {unfoldedCombatant.armorClass}
-                </span>
+                {unfoldedCombatant.isConcentrating && (
+                  <span className="text-[10px] font-bold text-amber-300 bg-purple-950/90 px-2 py-0.5 rounded border border-purple-500/60 shadow flex items-center gap-1 animate-pulse shrink-0">
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span>Concentración</span>
+                  </span>
+                )}
+                {unfoldedCombatant.tempHp && unfoldedCombatant.tempHp > 0 ? (
+                  <span className="text-[11px] font-mono font-bold text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-600/60 shrink-0 flex items-center gap-1">
+                    <Shield className="w-3 h-3 fill-cyan-400" />
+                    +{unfoldedCombatant.tempHp} Temp
+                  </span>
+                ) : null}
+                {(isDMView || unfoldedCombatant.type === 'player') && unfoldedCombatant.damageResistances && unfoldedCombatant.damageResistances.length > 0 && (
+                  <span className="text-[10px] font-mono font-semibold text-amber-300 bg-amber-950/80 px-2 py-0.5 rounded border border-amber-600/50 shrink-0">
+                    🛡️ Resiste: {unfoldedCombatant.damageResistances.join(', ')}
+                  </span>
+                )}
                 {unfoldedCombatant.gridPosition && (
-                  <span className="text-[11px] font-mono font-semibold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700 shrink-0">
+                  <span className="text-[10px] sm:text-[11px] font-mono font-semibold text-slate-400 bg-[#161822] px-2 py-0.5 rounded border border-slate-700/50 shrink-0">
                     Casilla: {COL_LABELS[unfoldedCombatant.gridPosition.col]}{unfoldedCombatant.gridPosition.row + 1}
                   </span>
                 )}
               </div>
-              <div className="text-xs text-slate-400 mt-0.5">
+              <div className="text-xs text-slate-400 mt-0.5 font-mono">
                 {unfoldedCombatant.jobClass} • Nivel {unfoldedCombatant.level || 1}
               </div>
 
               {/* HP Display */}
-              {isDMView ? (
-                <div className="mt-1 flex items-center gap-2">
-                  <div className="flex items-center gap-1 text-xs font-mono text-red-400 font-bold">
-                    <Heart className="w-3.5 h-3.5 fill-red-500" />
-                    <span>
-                      {unfoldedCombatant.currentHp} / {unfoldedCombatant.maxHp} HP
+              {(() => {
+                const { current: safeCurrent, max: safeMax, percent: hpPercent } = getSafeHpValues(
+                  unfoldedCombatant.currentHp,
+                  unfoldedCombatant.maxHp
+                );
+
+                const isOwnToken = Boolean(activePlayerId && unfoldedCombatant.id === activePlayerId);
+                const canSeeExactHp = isDMView || isOwnToken;
+
+                if (canSeeExactHp) {
+                  return (
+                    <div className="mt-1 flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1 text-xs font-mono text-emerald-400 font-bold">
+                        <Heart className="w-3.5 h-3.5 fill-red-500" />
+                        <span>
+                          {safeCurrent} / {safeMax} HP ({hpPercent}%)
+                        </span>
+                      </div>
+                      <div className="w-28 sm:w-36 h-2 bg-[#090a0f] rounded-full overflow-hidden border border-slate-700">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            hpPercent > 50
+                              ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                              : hpPercent > 25
+                              ? 'bg-gradient-to-r from-amber-500 to-yellow-400'
+                              : 'bg-gradient-to-r from-red-600 to-rose-500 animate-pulse'
+                          }`}
+                          style={{ width: `${hpPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Enemy or other token in player view: show ONLY condition label without any HP bar
+                const hs = getHealthStatus(
+                  safeCurrent,
+                  safeMax
+                );
+                return (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-xs font-bold border ${hs.badgeBg}`}
+                    >
+                      <Heart className="w-3 h-3" />
+                      {hs.label}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      Salud: <strong className="text-amber-400 font-mono">??? / ???</strong>
                     </span>
                   </div>
-                  <div className="w-28 h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-700">
-                    <div
-                      className="h-full bg-gradient-to-r from-red-600 via-amber-500 to-emerald-500"
-                      style={{
-                        width: `${Math.max(
-                          0,
-                          Math.min(100, (unfoldedCombatant.currentHp / unfoldedCombatant.maxHp) * 100)
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-1">
-                  {(() => {
-                    const hs = getHealthStatus(
-                      unfoldedCombatant.currentHp,
-                      unfoldedCombatant.maxHp
-                    );
-                    return (
-                      <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-xs font-bold border ${hs.badgeBg}`}
-                      >
-                        <Heart className="w-3 h-3" />
-                        {hs.label}
-                      </span>
-                    );
-                  })()}
+                );
+              })()}
+
+              {/* Botón Pasar Turno directamente abajo del estado del personaje en la mini barra de acción */}
+              {onAdvanceTurn && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playMenuBlip();
+                      onAdvanceTurn();
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-mono font-bold bg-[#181926] hover:bg-purple-900/60 text-purple-200 hover:text-white border border-purple-500/30 hover:border-purple-400 shadow-sm transition-all cursor-pointer active:scale-95"
+                    title="Pasar al siguiente turno en la iniciativa"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Pasar Turno</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -738,51 +1242,92 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
             {/* 1. ATACAR: Despliega la flecha estilo Hearthstone */}
             <button
               onClick={(e) => startTargeting(unfoldedCombatant, e)}
-              className="px-4 py-2 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black rounded-xl text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-red-950/80 ring-2 ring-red-400/60 transition-all hover:scale-105 active:scale-95 cursor-pointer uppercase tracking-wider"
-              title="ATACAR: Haz clic para desplegar la flecha y seleccionar tu objetivo"
+              disabled={!canInteract}
+              className={`px-4 py-2 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-2 shadow-lg transition-all uppercase tracking-wider ${
+                canInteract
+                  ? 'bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white shadow-red-950/80 ring-1 ring-red-400/60 hover:scale-105 active:scale-95 cursor-pointer'
+                  : 'bg-[#181922] text-slate-500 cursor-not-allowed opacity-60'
+              }`}
+              title={canInteract ? 'ATACAR: Haz clic para desplegar la flecha y seleccionar tu objetivo' : permCheck.reason}
             >
-              <Swords className="w-4 h-4 text-amber-200 animate-pulse" />
+              <Swords className="w-4 h-4 text-amber-200" />
               <span>ATACAR</span>
             </button>
 
-            {/* 2. Aplicar Daño / Curación (+ / -) */}
+            {/* 2. Aplicar Daño / Curación / HP Temp (+ / -) */}
             <button
               onClick={() => {
                 const actor = combatants.find((c) => c.id === activePlayerId) || combatants[0];
                 if (onInitiateAction) onInitiateAction(actor, unfoldedCombatant);
                 setUnfoldedCombatantId(null);
               }}
-              className="px-3 py-2 bg-red-950/90 hover:bg-red-900 border border-red-600 text-red-200 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-colors cursor-pointer"
+              className="px-3 py-2 bg-[#1b1922] hover:bg-[#251f2f] border border-purple-500/30 text-purple-200 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-colors cursor-pointer"
             >
               <Heart className="w-3.5 h-3.5 fill-red-400" />
               <span>Contador (+/-)</span>
             </button>
 
-            {/* 3. Estados Alterados */}
+            {/* 3. Botón de Concentración (D&D 5e) */}
+            <button
+              onClick={() => handleToggleConcentration(unfoldedCombatant)}
+              className={`px-3 py-2 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-all cursor-pointer border ${
+                unfoldedCombatant.isConcentrating
+                  ? 'bg-purple-900/80 text-amber-200 border-amber-400 ring-1 ring-amber-400/50 shadow-purple-950/80 scale-105'
+                  : 'bg-[#161822] hover:bg-[#1f2230] text-slate-300 border-slate-700/60'
+              }`}
+              title="Alternar estado de Concentración en un hechizo (D&D 5e)"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span>Concentración</span>
+              {unfoldedCombatant.isConcentrating && (
+                <span className="text-[9px] px-1 bg-amber-400 text-slate-950 font-black rounded-full">
+                  ✓
+                </span>
+              )}
+            </button>
+
+            {/* 4. Estados Alterados */}
             {onOpenStatusPicker && (
               <button
                 onClick={() => {
                   onOpenStatusPicker(unfoldedCombatant);
                   setUnfoldedCombatantId(null);
                 }}
-                className="px-3 py-2 bg-indigo-950/90 hover:bg-indigo-900 border border-indigo-600 text-indigo-200 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-colors cursor-pointer"
+                className="px-3 py-2 bg-[#171626] hover:bg-[#201e36] border border-purple-500/40 text-purple-200 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-colors cursor-pointer"
               >
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                 <span>Estados</span>
               </button>
             )}
 
-            {/* 4. Ficha de Personaje */}
+            {/* 5. Ficha de Personaje */}
             {onOpenCard && (isDMView || unfoldedCombatant.id === activePlayerId) && (
               <button
                 onClick={() => {
                   onOpenCard(unfoldedCombatant);
                   setUnfoldedCombatantId(null);
                 }}
-                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-xl text-xs sm:text-sm flex items-center gap-1.5 border border-slate-700 shadow transition-colors cursor-pointer"
+                className="px-3 py-2 bg-[#161822] hover:bg-[#202330] text-slate-200 font-medium rounded-xl text-xs sm:text-sm flex items-center gap-1.5 border border-slate-700/60 shadow transition-colors cursor-pointer"
               >
                 <FileText className="w-3.5 h-3.5 text-slate-400" />
                 <span>Ver Ficha</span>
+              </button>
+            )}
+
+            {/* 6. Pasar Turno también en fila de botones de acción */}
+            {onAdvanceTurn && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  playMenuBlip();
+                  onAdvanceTurn();
+                }}
+                className="px-3 py-2 bg-[#1e1d2c] hover:bg-purple-900/60 text-purple-200 hover:text-white border border-purple-500/40 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-colors cursor-pointer active:scale-95"
+                title="Pasar al siguiente turno en la iniciativa"
+              >
+                <span>Pasar Turno</span>
+                <ChevronRight className="w-4 h-4 text-purple-300" />
               </button>
             )}
 
@@ -790,7 +1335,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
             <button
               onClick={() => setUnfoldedCombatantId(null)}
               title="Cerrar opciones"
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+              className="p-2 bg-[#161822] hover:bg-[#202330] text-slate-400 hover:text-white rounded-xl transition-colors cursor-pointer border border-slate-700/40"
             >
               <X className="w-4 h-4" />
             </button>
@@ -811,6 +1356,11 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
             return (
               <span className="font-bold text-amber-300 flex items-center gap-1">
                 {current.name} ({current.type === 'enemy' ? 'Enemigo' : 'Aliado'})
+                {(isDMView || current.type === 'player') && current.damageResistances && current.damageResistances.length > 0 && (
+                  <span className="text-[10px] text-amber-400 font-mono bg-black/40 px-1 rounded">
+                    [Resist: {current.damageResistances.join(', ')}]
+                  </span>
+                )}
               </span>
             );
           })()}

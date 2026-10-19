@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Virtual tabletop encounter room synchronized in real time via room code",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Unique uppercase room code (e.g. DRAGON, K9F7W2)",
+          "minLength": 4,
+          "maxLength": 10
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp when the room was initialized"
+        },
+        "dmSessionId": {
+          "type": "string",
+          "description": "Identifier of the DM who created the room"
+        },
+        "encounter": {
+          "type": "object",
+          "description": "Complete encounter state including combatants, turn order, round, and logs"
+        },
+        "claimedTokens": {
+          "type": "object",
+          "description": "Mapping of combatantId to player session ID and name"
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Timestamp of the most recent change"
+        }
+      },
+      "required": ["code", "createdAt", "encounter"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomCode}": {
+      "schema": "Room",
+      "description": "Active tabletop combat encounters accessible via room code"
+    }
+  }
+}

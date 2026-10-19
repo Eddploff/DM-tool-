@@ -14,7 +14,10 @@ import {
   ChevronLeft,
   AlertTriangle,
   ListOrdered,
+  Globe,
+  Dices,
 } from 'lucide-react';
+import { GLOBAL_ENVIRONMENTAL_EFFECTS } from '../utils/environmentalEffects.ts';
 
 interface TurnOrderRibbonProps {
   encounter: EncounterState;
@@ -23,6 +26,7 @@ interface TurnOrderRibbonProps {
   onAdvanceTurn: () => void;
   onRetreatTurn: () => void;
   onOpenOrderModal: () => void;
+  onOpenGlobalEffects?: () => void;
 }
 
 export const TurnOrderRibbon: React.FC<TurnOrderRibbonProps> = ({
@@ -32,50 +36,75 @@ export const TurnOrderRibbon: React.FC<TurnOrderRibbonProps> = ({
   onAdvanceTurn,
   onRetreatTurn,
   onOpenOrderModal,
+  onOpenGlobalEffects,
 }) => {
   const currentActorId = encounter.turnOrder[encounter.activeTurnIndex];
   const currentActor = encounter.combatants.find((c) => c.id === currentActorId);
   const isMyTurn = currentActorId === activePlayerId;
 
   return (
-    <div className="bg-slate-950/90 border border-indigo-900/60 rounded-xl p-2.5 shadow-xl text-slate-100 flex flex-col gap-2">
+    <div className="bg-[#0e1017]/95 border border-[#232635] rounded-xl p-2.5 shadow-xl text-slate-200 backdrop-blur-md ring-1 ring-white/5 flex flex-col gap-2">
       {/* Top Status Bar: Round, Active Actor, and DM Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-950 pb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232635] pb-2">
         <div className="flex items-center gap-2">
-          <div className="px-2.5 py-0.5 rounded-full bg-blue-950 border border-blue-700 text-blue-300 text-xs font-bold font-mono">
+          <div className="px-2.5 py-0.5 rounded-lg bg-[#141624] border border-purple-500/30 text-purple-300 text-xs font-bold font-mono">
             Ronda {encounter.round}
           </div>
 
           {encounter.isSurpriseRound && (
-            <span className="px-2 py-0.5 rounded-full bg-amber-950 border border-amber-500 text-amber-300 text-xs font-bold flex items-center gap-1 animate-pulse">
-              <AlertTriangle className="w-3 h-3" />
-              ¡Ronda Sorpresa ({encounter.surpriseSide === 'players' ? 'Emboscada Jugadores' : 'Emboscada Enemiga'})!
+            <span className="px-2 py-0.5 rounded-lg bg-amber-950/60 border border-amber-500/40 text-amber-300 text-xs font-mono font-bold flex items-center gap-1 animate-pulse">
+              <AlertTriangle className="w-3 h-3 text-amber-400" />
+              <span>Ronda Sorpresa ({encounter.surpriseSide === 'players' ? 'Emboscada Jugadores' : 'Emboscada Enemiga'})</span>
             </span>
           )}
 
           {/* Turn Actor Banner */}
           <div className="text-xs sm:text-sm font-semibold flex items-center gap-1.5">
-            <span className="text-slate-400">Turno de:</span>
+            <span className="text-slate-400 font-mono">Turno:</span>
             {currentActor ? (
               <span
-                className={`font-bold px-2 py-0.5 rounded ${
+                className={`font-bold px-2 py-0.5 rounded-md font-mono ${
                   currentActor.type === 'enemy'
-                    ? 'bg-red-950/80 text-red-300 border border-red-800'
-                    : 'bg-blue-950/80 text-blue-300 border border-blue-800'
+                    ? 'bg-red-950/60 text-red-200 border border-red-800/50'
+                    : 'bg-purple-950/60 text-purple-200 border border-purple-700/50'
                 }`}
               >
-                {currentActor.name} ({currentActor.type === 'enemy' ? 'Enemigo • Control DM' : 'Jugador'})
+                {currentActor.name} ({currentActor.type === 'enemy' ? 'Enemigo • DM' : 'Jugador'})
               </span>
             ) : (
-              <span className="text-slate-500 italic">Nadie en turno</span>
+              <span className="text-slate-500 italic font-mono">Nadie en turno</span>
             )}
 
             {isMyTurn && !isDMView && (
-              <span className="bg-amber-500 text-slate-950 font-black text-xs px-2 py-0.5 rounded-full animate-bounce shadow">
+              <span className="bg-purple-500 text-slate-950 font-bold font-mono text-xs px-2 py-0.5 rounded-md animate-pulse shadow">
                 ¡ES TU TURNO!
               </span>
             )}
           </div>
+
+          {/* Active Global Environmental Effects Tags */}
+          {encounter.activeGlobalEffects && encounter.activeGlobalEffects.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap ml-1">
+              {encounter.activeGlobalEffects.map((effId) => {
+                const eff = GLOBAL_ENVIRONMENTAL_EFFECTS.find((e) => e.id === effId);
+                if (!eff) return null;
+                return (
+                  <button
+                    key={eff.id}
+                    onClick={() => {
+                      playMenuBlip();
+                      if (onOpenGlobalEffects) onOpenGlobalEffects();
+                    }}
+                    title={`${eff.name}: ${eff.summary}. Haz clic para ver detalles.`}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border flex items-center gap-1 cursor-pointer transition-all hover:scale-105 ${eff.badgeClass}`}
+                  >
+                    <span>{eff.icon}</span>
+                    <span>{eff.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* DM Turn Progression & Order Config Controls */}
@@ -84,26 +113,26 @@ export const TurnOrderRibbon: React.FC<TurnOrderRibbonProps> = ({
             <button
               onClick={onRetreatTurn}
               title="Turno anterior"
-              className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+              className="p-1.5 rounded-lg bg-[#161824] border border-slate-700/60 text-slate-300 hover:text-white hover:bg-[#202334] transition-colors cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
 
             <button
               onClick={onAdvanceTurn}
-              className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1 shadow transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-[#1e1c30] hover:bg-purple-900/60 text-purple-200 hover:text-white text-xs font-mono font-bold flex items-center gap-1 shadow border border-purple-500/40 hover:border-purple-400 transition-colors cursor-pointer"
             >
               <span>Siguiente Turno</span>
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-4 h-4 text-purple-300" />
             </button>
 
             <button
               onClick={onOpenOrderModal}
-              title="Configurar y ordenar las iniciativas presenciales del combate"
-              className="px-2.5 py-1 rounded-lg bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500 text-amber-200 text-xs font-bold flex items-center gap-1 transition-colors"
+              title="Pedir e ingresar manualmente las iniciativas de la mesa"
+              className="px-2.5 py-1 rounded-lg bg-[#1a1829] hover:bg-purple-900/60 border border-purple-500/40 text-purple-200 hover:text-white text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm hover:scale-105 active:scale-95"
             >
-              <ListOrdered className="w-3.5 h-3.5" />
-              <span>Pedir / Ajustar Orden</span>
+              <Dices className="w-3.5 h-3.5 text-purple-400" />
+              <span>Pedir Iniciativas</span>
             </button>
           </div>
         )}
@@ -112,10 +141,10 @@ export const TurnOrderRibbon: React.FC<TurnOrderRibbonProps> = ({
         {!isDMView && isMyTurn && (
           <button
             onClick={onAdvanceTurn}
-            className="px-3 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold text-xs rounded-lg shadow hover:from-emerald-500 hover:to-teal-500 flex items-center gap-1 transition-all"
+            className="px-3 py-1 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-600 hover:to-indigo-600 text-white font-bold font-mono text-xs rounded-lg shadow flex items-center gap-1 transition-all cursor-pointer"
           >
             <span>Terminar Mi Turno</span>
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-4 h-4 text-purple-200" />
           </button>
         )}
       </div>
@@ -138,9 +167,9 @@ export const TurnOrderRibbon: React.FC<TurnOrderRibbonProps> = ({
               className={`relative flex items-center gap-1.5 px-2 py-1 rounded-lg shrink-0 border transition-all ${
                 isActive
                   ? isEnemy
-                    ? 'bg-red-950 border-red-500 shadow-md shadow-red-900/50 scale-105 ring-2 ring-red-400'
-                    : 'bg-blue-950 border-blue-400 shadow-md shadow-blue-900/50 scale-105 ring-2 ring-blue-400'
-                  : 'bg-slate-900/80 border-slate-800 text-slate-400'
+                    ? 'bg-red-950/70 border-red-500 shadow-md shadow-red-950/50 scale-105 ring-1 ring-red-400'
+                    : 'bg-[#1c1a2c] border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.3)] scale-105 ring-1 ring-purple-400'
+                  : 'bg-[#111219]/90 border border-slate-800/80 text-slate-400'
               } ${isDefeated ? 'opacity-30 grayscale' : ''}`}
             >
               {/* Order number badge */}

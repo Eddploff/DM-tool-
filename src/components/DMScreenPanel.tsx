@@ -3,6 +3,7 @@ import {
   Combatant,
   EncounterState,
   BattleEnvironment,
+  getDamageTypeMeta,
 } from '../types/combat.ts';
 import {
   applyDamage,
@@ -33,6 +34,7 @@ import {
   Swords,
   Sparkles,
   Mountain,
+  Dices,
 } from 'lucide-react';
 
 interface DMScreenPanelProps {
@@ -171,18 +173,18 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
   };
 
   return (
-    <div className="bg-slate-950/90 rounded-2xl border-2 border-amber-500/70 shadow-2xl p-4 sm:p-5 text-slate-100 flex flex-col gap-4">
+    <div className="bg-[#0e1017]/95 rounded-2xl border border-purple-500/25 shadow-2xl p-4 sm:p-5 text-slate-200 flex flex-col gap-4 backdrop-blur-xl ring-1 ring-white/5">
       {/* DM Master Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-amber-900/50">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#232635]">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-amber-500/20 border border-amber-500/50 flex items-center justify-center">
-            <Shield className="w-5 h-5 text-amber-400" />
+          <div className="w-9 h-9 rounded-lg bg-[#181926] border border-purple-500/30 flex items-center justify-center">
+            <Shield className="w-5 h-5 text-purple-300" />
           </div>
           <div>
-            <h2 className="font-bold text-base sm:text-lg text-amber-200">
+            <h2 className="font-bold text-base sm:text-lg text-slate-100 font-mono">
               Centro de Control del DM (Host de Mesa)
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-400 font-mono">
               Controla manualmente los turnos de enemigos, iniciativas y ve el HP de todos en tiempo real.
             </p>
           </div>
@@ -192,30 +194,31 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
         <div className="flex items-center flex-wrap gap-2">
           <button
             onClick={onOpenAddEnemyModal}
-            className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 shadow transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-[#201014] hover:bg-red-950 border border-red-700/60 text-red-200 text-xs font-mono font-bold flex items-center gap-1.5 shadow transition-colors cursor-pointer"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-4 h-4 text-red-400" />
             <span>Añadir Monstruo</span>
           </button>
 
           <button
             onClick={onOpenOrderModal}
-            className="px-3 py-1.5 rounded-lg bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500 text-amber-200 text-xs font-bold flex items-center gap-1.5 transition-colors"
+            className="px-3 py-1.5 rounded-lg bg-[#181926] hover:bg-purple-950/70 border border-purple-500/40 text-purple-200 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm hover:scale-105 active:scale-95"
+            title="Pedir e introducir manualmente las iniciativas de los participantes"
           >
-            <ListOrdered className="w-4 h-4" />
-            <span>Pedir / Ajustar Orden</span>
+            <Dices className="w-4 h-4 text-purple-400" />
+            <span>Pedir Iniciativas</span>
           </button>
 
           {/* Entorno de Batalla selector */}
-          <div className="flex items-center gap-1.5 bg-slate-900 border border-amber-500/30 rounded-lg px-2.5 py-1 shadow-inner">
-            <span className="text-xs text-amber-300 font-semibold flex items-center gap-1">
-              <Mountain className="w-3.5 h-3.5 text-amber-400" />
+          <div className="flex items-center gap-1.5 bg-[#12131b] border border-[#232635] rounded-lg px-2.5 py-1 shadow-inner">
+            <span className="text-xs text-purple-300 font-mono font-semibold flex items-center gap-1">
+              <Mountain className="w-3.5 h-3.5 text-purple-400" />
               <span>Entorno:</span>
             </span>
             <select
               value={encounter.environment}
               onChange={(e) => handleChangeEnv(e.target.value as BattleEnvironment)}
-              className="bg-slate-950 text-xs text-amber-200 font-bold px-2 py-1 rounded border border-slate-700 focus:outline-none focus:border-amber-400 cursor-pointer"
+              className="bg-[#0b0c10] text-xs text-slate-200 font-mono font-bold px-2 py-1 rounded border border-slate-700/60 focus:outline-none focus:border-purple-400 cursor-pointer"
               title="Cambiar el fondo visual del combate"
             >
               <option value="forest">🌲 Bosque</option>
@@ -259,7 +262,7 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                       : 'bg-slate-950/70 border-slate-800 hover:border-red-900'
                   } ${isDefeated ? 'opacity-40' : ''}`}
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                     {/* Token & Info */}
                     <div className="flex items-center gap-2.5 min-w-0">
                       <img
@@ -267,15 +270,26 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                         alt={enemy.name}
                         className="w-10 h-10 rounded-full object-cover border border-red-500/80 shrink-0"
                       />
-                      <div className="truncate">
+                      <div className="truncate min-w-0">
                         <h4 className="font-bold text-sm text-slate-100 truncate flex items-center gap-1.5">
                           <span>{enemy.name}</span>
-                          <span className="text-[10px] font-mono px-1 rounded bg-slate-800 text-slate-300">
-                            CA {enemy.armorClass}
-                          </span>
                         </h4>
                         <div className="text-[11px] text-slate-400 truncate">
                           {enemy.jobClass}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          {enemy.tempHp && enemy.tempHp > 0 ? (
+                            <span className="text-[10px] font-mono font-bold text-cyan-300 bg-cyan-950/80 px-1.5 py-0.2 rounded border border-cyan-600 flex items-center gap-0.5">
+                              <Shield className="w-2.5 h-2.5 fill-cyan-400" />
+                              +{enemy.tempHp} Temp
+                            </span>
+                          ) : null}
+                          {enemy.damageResistances && enemy.damageResistances.length > 0 ? (
+                            <span className="text-[10px] font-bold text-amber-300 bg-amber-950/80 px-1.5 py-0.2 rounded border border-amber-600 flex items-center gap-1">
+                              <Shield className="w-2.5 h-2.5 text-amber-400" />
+                              <span>Resiste: {enemy.damageResistances.map((r) => (r === 'physical' ? 'Físico' : r === 'magical' ? 'Mágico' : getDamageTypeMeta(r).name)).join(', ')} (½)</span>
+                            </span>
+                          ) : null}
                         </div>
                         {enemy.statusEffects && enemy.statusEffects.length > 0 && (
                           <div className="mt-1">
@@ -297,7 +311,7 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                     </div>
 
                     {/* Numeric HP Direct Editor */}
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0 w-full sm:w-auto pt-1 sm:pt-0 border-t border-slate-800/60 sm:border-t-0">
                       <div className="text-right">
                         <div className="text-xs font-mono font-bold text-red-400">
                           {enemy.currentHp} / {enemy.maxHp} HP
@@ -434,7 +448,7 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                       : 'bg-slate-950/70 border-slate-800 hover:border-blue-900'
                   } ${isDefeated ? 'opacity-40' : ''}`}
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                     {/* Token & Info */}
                     <div className="flex items-center gap-2.5 min-w-0">
                       <img
@@ -442,12 +456,9 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                         alt={hero.name}
                         className="w-10 h-10 rounded-full object-cover border border-blue-400/80 shrink-0"
                       />
-                      <div className="truncate">
+                      <div className="truncate min-w-0">
                         <h4 className="font-bold text-sm text-slate-100 truncate flex items-center gap-1.5">
                           <span>{hero.name}</span>
-                          <span className="text-[10px] font-mono px-1 rounded bg-slate-800 text-slate-300">
-                            CA {hero.armorClass}
-                          </span>
                         </h4>
                         <div className="text-[11px] text-slate-400 truncate">
                           {hero.jobClass} • Nivel {hero.level || 1}
@@ -472,7 +483,7 @@ export const DMScreenPanel: React.FC<DMScreenPanelProps> = ({
                     </div>
 
                     {/* Numeric HP Direct Editor */}
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0 w-full sm:w-auto pt-1 sm:pt-0 border-t border-slate-800/60 sm:border-t-0">
                       <div className="text-right">
                         <div className="text-xs font-mono font-bold text-emerald-400">
                           {hero.currentHp} / {hero.maxHp} HP

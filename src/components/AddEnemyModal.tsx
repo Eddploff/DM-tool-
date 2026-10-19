@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Combatant, CombatAction } from '../types/combat.ts';
+import { Combatant, CombatAction, DamageType } from '../types/combat.ts';
 import { PRESET_AVATARS } from '../utils/defaultData.ts';
 import { playMenuBlip } from '../utils/soundEffects.ts';
-import { X, Plus, Upload, Skull, Sparkles, Check } from 'lucide-react';
+import { X, Plus, Upload, Skull, Sparkles, Check, Shield, Swords } from 'lucide-react';
 
 interface AddEnemyModalProps {
   isOpen: boolean;
@@ -15,9 +15,9 @@ interface PresetMonsterTemplate {
   jobClass: string;
   avatar: string;
   hp: number;
-  armorClass: number;
   attackBonus: number;
   level: number;
+  damageResistances?: DamageType[];
   actions: CombatAction[];
 }
 
@@ -27,9 +27,9 @@ const MONSTER_PRESETS: PresetMonsterTemplate[] = [
     jobClass: 'Bestia Alfa Legendaria',
     avatar: PRESET_AVATARS.behemoth,
     hp: 160,
-    armorClass: 15,
     attackBonus: 7,
     level: 8,
+    damageResistances: ['cortante', 'contundente'],
     actions: [
       {
         id: 'p-b1',
@@ -52,9 +52,9 @@ const MONSTER_PRESETS: PresetMonsterTemplate[] = [
     jobClass: 'Hostigador Salvaje',
     avatar: PRESET_AVATARS.goblin,
     hp: 35,
-    armorClass: 13,
     attackBonus: 4,
     level: 4,
+    damageResistances: [],
     actions: [
       {
         id: 'p-g1',
@@ -70,9 +70,9 @@ const MONSTER_PRESETS: PresetMonsterTemplate[] = [
     jobClass: 'Sierpe de Fuego Ancestral',
     avatar: PRESET_AVATARS.redDragon,
     hp: 210,
-    armorClass: 17,
     attackBonus: 8,
     level: 10,
+    damageResistances: ['fuego'],
     actions: [
       {
         id: 'p-d1',
@@ -95,9 +95,9 @@ const MONSTER_PRESETS: PresetMonsterTemplate[] = [
     jobClass: 'Nigromante del Vacío',
     avatar: PRESET_AVATARS.darkSorcerer,
     hp: 65,
-    armorClass: 13,
     attackBonus: 6,
     level: 7,
+    damageResistances: ['necrotico'],
     actions: [
       {
         id: 'p-s1',
@@ -125,10 +125,10 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
   const [name, setName] = useState('Nuevo Monstruo');
   const [jobClass, setJobClass] = useState('Bestia de Combate');
   const [hp, setHp] = useState(80);
-  const [armorClass, setArmorClass] = useState(14);
   const [attackBonus, setAttackBonus] = useState(5);
   const [level, setLevel] = useState(6);
   const [avatar, setAvatar] = useState(PRESET_AVATARS.behemoth);
+  const [damageResistances, setDamageResistances] = useState<DamageType[]>(['cortante']);
 
   if (!isOpen) return null;
 
@@ -151,9 +151,16 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
     setJobClass(preset.jobClass);
     setAvatar(preset.avatar);
     setHp(preset.hp);
-    setArmorClass(preset.armorClass);
     setAttackBonus(preset.attackBonus);
     setLevel(preset.level);
+    setDamageResistances(preset.damageResistances || []);
+  };
+
+  const toggleResistance = (type: DamageType) => {
+    playMenuBlip();
+    setDamageResistances((prev) =>
+      prev.includes(type) ? prev.filter((r) => r !== type) : [...prev, type]
+    );
   };
 
   const handleAdd = () => {
@@ -165,10 +172,10 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
       avatar,
       currentHp: hp,
       maxHp: hp,
-      armorClass,
       attackBonus,
       jobClass: jobClass.trim() || 'Enemigo',
       level,
+      damageResistances,
       actions: [
         {
           id: `act-${Date.now()}-1`,
@@ -186,19 +193,19 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-      <div className="relative w-full max-w-xl bg-slate-950 border-2 border-red-800/80 rounded-2xl shadow-2xl p-5 text-slate-100 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+      <div className="relative w-full max-w-xl bg-[#0e1017]/98 border border-red-900/40 rounded-2xl shadow-2xl p-5 text-slate-100 max-h-[90vh] overflow-y-auto ring-1 ring-white/10">
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-red-950">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 bg-red-950 rounded-lg border border-red-800">
+        <div className="flex items-center justify-between pb-3 border-b border-[#232635]">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-[#1c1216] rounded-xl border border-red-800/50">
               <Skull className="w-5 h-5 text-red-400" />
             </div>
             <div>
-              <h3 className="text-base sm:text-lg font-bold text-red-300">
+              <h3 className="text-base sm:text-lg font-bold text-red-300 font-mono">
                 Añadir Token de Enemigo al Combate
               </h3>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-400 font-mono">
                 Crea un monstruo o elige un clásico de JRPG
               </p>
             </div>
@@ -206,7 +213,7 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Cerrar modal"
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#181a26] border border-transparent hover:border-[#282d40] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -234,7 +241,7 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
                   {m.name}
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">
-                  {m.hp} HP • CA {m.armorClass}
+                  {m.hp} HP • Nivel {m.level}
                 </span>
               </button>
             ))}
@@ -293,7 +300,7 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-slate-300 font-medium mb-1">
                 Puntos de Vida (HP):
@@ -309,19 +316,6 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
             </div>
             <div>
               <label className="block text-xs text-slate-300 font-medium mb-1">
-                Defensa / CA:
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="50"
-                value={armorClass}
-                onChange={(e) => setArmorClass(parseInt(e.target.value, 10) || 10)}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono font-bold text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-slate-300 font-medium mb-1">
                 Bono de Ataque (+):
               </label>
               <input
@@ -332,6 +326,80 @@ export const AddEnemyModal: React.FC<AddEnemyModalProps> = ({
                 onChange={(e) => setAttackBonus(parseInt(e.target.value, 10) || 0)}
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono font-bold text-white"
               />
+            </div>
+          </div>
+
+          {/* Resistencias de Daño (Mitad de Daño Efectivo - Solo sabido por el DM) */}
+          <div className="pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-amber-400" />
+                <span>Resistencias de Daño (Información solo para el DM):</span>
+              </label>
+              <span className="text-[10px] text-amber-400">Recibe solo ½ de daño</span>
+            </div>
+
+            {/* Daños Físicos */}
+            <div className="mb-2">
+              <span className="text-[10px] font-bold uppercase text-amber-400">⚔️ Físicos (3):</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[
+                  { key: 'contundente', label: '🔨 Contundente' },
+                  { key: 'cortante', label: '⚔️ Cortante' },
+                  { key: 'perforante', label: '🏹 Perforante' },
+                ].map((item) => {
+                  const isChecked = damageResistances.includes(item.key as DamageType);
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => toggleResistance(item.key as DamageType)}
+                      className={`px-2 py-1 rounded text-xs font-bold border transition-all ${
+                        isChecked
+                          ? 'bg-amber-950 border-amber-500 text-amber-200 ring-1 ring-amber-500/50'
+                          : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {item.label} {isChecked && '✓'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Daños Mágicos y Elementales */}
+            <div>
+              <span className="text-[10px] font-bold uppercase text-cyan-400">🔮 Mágicos y Elementales (10):</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[
+                  { key: 'acido', label: '🧪 Ácido' },
+                  { key: 'frio', label: '❄️ Frío' },
+                  { key: 'fuego', label: '🔥 Fuego' },
+                  { key: 'fuerza', label: '🌀 Fuerza' },
+                  { key: 'rayo', label: '⚡ Rayo' },
+                  { key: 'trueno', label: '📢 Trueno' },
+                  { key: 'necrotico', label: '💀 Necrótico' },
+                  { key: 'psiquico', label: '🧠 Psíquico' },
+                  { key: 'radiante', label: '☀️ Radiante' },
+                  { key: 'veneno', label: '☠️ Veneno' },
+                ].map((item) => {
+                  const isChecked = damageResistances.includes(item.key as DamageType);
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => toggleResistance(item.key as DamageType)}
+                      className={`px-2 py-1 rounded text-xs font-bold border transition-all ${
+                        isChecked
+                          ? 'bg-cyan-950 border-cyan-500 text-cyan-200 ring-1 ring-cyan-500/50'
+                          : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {item.label} {isChecked && '✓'}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>

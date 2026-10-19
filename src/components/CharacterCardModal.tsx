@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Combatant, CombatAction } from '../types/combat.ts';
+import { Combatant, CombatAction, DamageType } from '../types/combat.ts';
 import { PRESET_AVATARS } from '../utils/defaultData.ts';
 import { playMenuBlip } from '../utils/soundEffects.ts';
 import {
@@ -82,15 +82,15 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-      <div className="relative w-full max-w-2xl bg-slate-950 border-2 border-indigo-700/80 rounded-2xl shadow-2xl p-5 text-slate-100 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+      <div className="relative w-full max-w-2xl bg-[#0e1017]/95 border border-purple-500/30 rounded-2xl shadow-2xl p-5 text-slate-200 max-h-[90vh] overflow-y-auto ring-1 ring-white/10">
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-indigo-950">
+        <div className="flex items-center justify-between pb-3 border-b border-[#232635]">
           <div className="flex items-center gap-2">
-            <h3 className="text-lg font-bold text-amber-200">
+            <h3 className="text-lg font-bold text-slate-100 font-mono">
               Tarjeta de Personaje: {form.name}
             </h3>
-            <span className="text-xs px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800">
+            <span className="text-xs px-2 py-0.5 rounded font-mono bg-[#161824] text-purple-300 border border-purple-500/30">
               {form.type === 'enemy' ? 'Monstruo' : 'Héroe'}
             </span>
           </div>
@@ -229,18 +229,20 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs text-slate-300 font-medium mb-1">
-                CA (Defensa):
+              <label className="block text-xs text-cyan-300 font-medium mb-1 flex items-center gap-1">
+                <Shield className="w-3 h-3 text-cyan-400" />
+                <span>HP Temporal:</span>
               </label>
               <input
                 type="number"
-                min="1"
-                max="99"
-                value={form.armorClass}
+                min="0"
+                max="999"
+                value={form.tempHp || 0}
                 onChange={(e) =>
-                  setForm({ ...form, armorClass: parseInt(e.target.value, 10) || 10 })
+                  setForm({ ...form, tempHp: Math.max(0, parseInt(e.target.value, 10) || 0) })
                 }
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono font-bold"
+                title="Puntos de vida temporales que absorben daño antes de reducir el HP actual"
+                className="w-full bg-slate-900 border border-cyan-800 rounded-lg px-3 py-1.5 text-xs text-cyan-300 font-mono font-bold"
               />
             </div>
 
@@ -258,6 +260,94 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
                 }
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono font-bold"
               />
+            </div>
+          </div>
+
+          {/* Resistencias a Daño (Mitad de daño efectivo) */}
+          <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-amber-400" />
+                <span>Resistencias de Daño (Recibe solo la mitad del daño):</span>
+              </label>
+              <span className="text-[10px] text-amber-400">Regla D&D 5e</span>
+            </div>
+
+            {/* Daños Físicos */}
+            <div className="mb-2">
+              <span className="text-[10px] font-bold uppercase text-amber-400">⚔️ Daños Físicos:</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[
+                  { key: 'contundente', label: '🔨 Contundente' },
+                  { key: 'cortante', label: '⚔️ Cortante' },
+                  { key: 'perforante', label: '🏹 Perforante' },
+                ].map((item) => {
+                  const isChecked = form.damageResistances?.includes(item.key as DamageType);
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        playMenuBlip();
+                        const current = form.damageResistances || [];
+                        const next = current.includes(item.key as DamageType)
+                          ? current.filter((r) => r !== item.key)
+                          : [...current, item.key as DamageType];
+                        setForm({ ...form, damageResistances: next });
+                      }}
+                      className={`px-2 py-1 rounded text-xs font-bold border transition-all ${
+                        isChecked
+                          ? 'bg-amber-950 border-amber-500 text-amber-200 ring-1 ring-amber-500/50'
+                          : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {item.label} {isChecked && '✓'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Daños Mágicos y Elementales */}
+            <div>
+              <span className="text-[10px] font-bold uppercase text-cyan-400">🔮 Daños Mágicos y Elementales:</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[
+                  { key: 'acido', label: '🧪 Ácido' },
+                  { key: 'frio', label: '❄️ Frío' },
+                  { key: 'fuego', label: '🔥 Fuego' },
+                  { key: 'fuerza', label: '🌀 Fuerza' },
+                  { key: 'rayo', label: '⚡ Rayo' },
+                  { key: 'trueno', label: '📢 Trueno' },
+                  { key: 'necrotico', label: '💀 Necrótico' },
+                  { key: 'psiquico', label: '🧠 Psíquico' },
+                  { key: 'radiante', label: '☀️ Radiante' },
+                  { key: 'veneno', label: '☠️ Veneno' },
+                ].map((item) => {
+                  const isChecked = form.damageResistances?.includes(item.key as DamageType);
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        playMenuBlip();
+                        const current = form.damageResistances || [];
+                        const next = current.includes(item.key as DamageType)
+                          ? current.filter((r) => r !== item.key)
+                          : [...current, item.key as DamageType];
+                        setForm({ ...form, damageResistances: next });
+                      }}
+                      className={`px-2 py-1 rounded text-xs font-bold border transition-all ${
+                        isChecked
+                          ? 'bg-cyan-950 border-cyan-500 text-cyan-200 ring-1 ring-cyan-500/50'
+                          : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {item.label} {isChecked && '✓'}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

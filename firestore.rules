@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.matches('^[a-zA-Z0-9_\\-]+$') && id.size() <= 64;
+    }
+
+    function isValidRoomCode(code) {
+      return code is string && code.matches('^[A-Z0-9]{4,10}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll(['code', 'createdAt', 'encounter']) &&
+             data.code is string &&
+             isValidRoomCode(data.code) &&
+             data.createdAt is number &&
+             data.encounter is map &&
+             (!('dmSessionId' in data) || (data.dmSessionId is string && data.dmSessionId.size() <= 128)) &&
+             (!('lastUpdated' in data) || data.lastUpdated is number) &&
+             (!('claimedTokens' in data) || data.claimedTokens is map);
+    }
+
+    // Room collection for real-time tabletop synchronization
+    match /rooms/{roomCode} {
+      allow get: if isValidRoomCode(roomCode);
+      allow list: if false; // Disallow broad enumeration of active room codes for privacy
+
+      allow create: if isValidRoomCode(roomCode) &&
+                       incoming().code == roomCode &&
+                       isValidRoom(incoming());
+
+      allow update: if isValidRoomCode(roomCode) &&
+                       incoming().code == roomCode &&
+                       isValidRoom(incoming());
+
+      allow delete: if false;
+    }
+
+    // Default catch-all denies unexpected paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
