@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Combatant, EncounterState } from '../types/combat.ts';
+import { sortCombatantsByInitiative } from '../utils/combatLogic.ts';
 import { playMenuBlip } from '../utils/soundEffects.ts';
 import {
   X,
@@ -15,6 +16,8 @@ import {
   Shield,
   Skull,
   User,
+  GripVertical,
+  Hand,
 } from 'lucide-react';
 
 interface CombatOrderModalProps {
@@ -57,7 +60,11 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
     encounter.surpriseSide || null
   );
 
-  const [autoSortOnSave, setAutoSortOnSave] = useState<boolean>(true);
+  const [autoSortOnSave, setAutoSortOnSave] = useState<boolean>(false);
+  const [isManualOverride, setIsManualOverride] = useState<boolean>(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -69,6 +76,8 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
     next[index - 1] = next[index];
     next[index] = temp;
     setOrderList(next);
+    setIsManualOverride(true);
+    setAutoSortOnSave(false);
   };
 
   const moveDown = (index: number) => {
@@ -79,16 +88,37 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
     next[index + 1] = next[index];
     next[index] = temp;
     setOrderList(next);
+    setIsManualOverride(true);
+    setAutoSortOnSave(false);
+  };
+
+  const handleDrop = (targetIndex: number) => {
+    if (draggedIndex === null || draggedIndex === targetIndex) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    const next = [...orderList];
+    const [moved] = next.splice(draggedIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setOrderList(next);
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+    setIsManualOverride(true);
+    setAutoSortOnSave(false); // Preserve user's drag override on save
+    setNoticeMsg('Orden manual personalizado activo (Se respetará al guardar)');
+    setTimeout(() => setNoticeMsg(null), 3500);
+    playMenuBlip();
   };
 
   const sortByInitiative = () => {
     playMenuBlip();
-    const sorted = [...orderList].sort((a, b) => {
-      const initA = initiatives[a] ?? 0;
-      const initB = initiatives[b] ?? 0;
-      return initB - initA;
-    });
+    const sorted = sortCombatantsByInitiative(encounter.combatants, initiatives, orderList);
     setOrderList(sorted);
+    setIsManualOverride(false);
+    setAutoSortOnSave(true);
+    setNoticeMsg('Ordenado automáticamente según las iniciativas');
+    setTimeout(() => setNoticeMsg(null), 3500);
   };
 
   // Helper to roll 1d20 + bonus for enemies only (if DM wants to save time on monsters)
@@ -104,12 +134,10 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
       });
     setInitiatives(nextInits);
     // Sort
-    const sorted = [...orderList].sort((a, b) => {
-      const initA = nextInits[a] ?? 0;
-      const initB = nextInits[b] ?? 0;
-      return initB - initA;
-    });
+    const sorted = sortCombatantsByInitiative(encounter.combatants, nextInits, orderList);
     setOrderList(sorted);
+    setIsManualOverride(false);
+    setAutoSortOnSave(true);
   };
 
   const handleAdjustInitiative = (id: string, delta: number) => {
@@ -124,11 +152,7 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
     playMenuBlip();
     let finalOrder = [...orderList];
     if (autoSortOnSave) {
-      finalOrder.sort((a, b) => {
-        const initA = initiatives[a] ?? 0;
-        const initB = initiatives[b] ?? 0;
-        return initB - initA;
-      });
+      finalOrder = sortCombatantsByInitiative(encounter.combatants, initiatives, orderList);
     }
     onSaveOrder(finalOrder, surprise, initiatives);
     onClose();
@@ -168,15 +192,17 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[#12141f]/90 p-3 rounded-xl border border-[#232635]">
           <div className="flex items-center gap-2 flex-wrap">
             <button
+              type="button"
               onClick={sortByInitiative}
-              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer"
-              title="Ordenar la lista de mayor a menor iniciativa de inmediato"
+              className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow-md shadow-indigo-950/40 transition-all active:scale-95 cursor-pointer"
+              title="Ordenar automáticamente la secuencia de turnos de mayor a menor valor de iniciativa"
             >
-              <ListOrdered className="w-3.5 h-3.5" />
-              <span>Ordenar por Iniciativa (↓)</span>
+              <ListOrdered className="w-4 h-4 text-indigo-200" />
+              <span>Auto-ordenar por Iniciativas (↓)</span>
             </button>
 
             <button
+              type="button"
               onClick={rollForEnemiesOnly}
               className="px-2.5 py-1.5 rounded-lg bg-[#181926] hover:bg-red-950/70 text-red-200 border border-red-800/40 text-xs font-mono font-medium flex items-center gap-1 transition-colors cursor-pointer"
               title="Tira 1d20 automático solo para los enemigos y deja intactos a los jugadores"
@@ -203,6 +229,50 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
           </div>
         </div>
 
+        {/* Notice Banner when Manual Drag Override or Sort applied */}
+        {noticeMsg && (
+          <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-purple-950/70 border border-purple-500/40 text-purple-200 text-xs font-mono animate-fade-in shadow-md">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-400 shrink-0" />
+              <span>{noticeMsg}</span>
+            </div>
+            {isManualOverride && (
+              <button
+                type="button"
+                onClick={sortByInitiative}
+                className="text-[11px] underline text-purple-300 hover:text-white cursor-pointer ml-2 shrink-0 font-bold"
+              >
+                Auto-ordenar
+              </button>
+            )}
+          </div>
+        )}
+
+        {isManualOverride && !noticeMsg && (
+          <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-amber-950/40 border border-amber-600/40 text-amber-200 text-xs font-mono">
+            <div className="flex items-center gap-1.5">
+              <Hand className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Orden manual personalizado activo (puedes arrastrar filas para sobreescribir el orden de turno).</span>
+            </div>
+            <button
+              type="button"
+              onClick={sortByInitiative}
+              className="text-[11px] underline text-amber-300 hover:text-white cursor-pointer ml-2 shrink-0 font-bold"
+            >
+              Re-ordenar por iniciativa
+            </button>
+          </div>
+        )}
+
+        {/* Drag instructions prompt */}
+        <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono px-1">
+          <span className="flex items-center gap-1.5">
+            <GripVertical className="w-3.5 h-3.5 text-purple-400 inline shrink-0" />
+            <span>Arrastra cualquier combatiente por el tirador para cambiar su turno manualmente</span>
+          </span>
+          <span className="text-slate-500">{orderList.length} combatientes</span>
+        </div>
+
         {/* Order List */}
         <div className="flex flex-col gap-2">
           {orderList.map((id, index) => {
@@ -210,18 +280,58 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
             if (!combatant) return null;
             const isEnemy = combatant.type === 'enemy';
             const initVal = initiatives[id] ?? 10;
+            const isDragging = draggedIndex === index;
+            const isDragOver = dragOverIndex === index && draggedIndex !== index;
 
             return (
               <div
                 key={id}
-                className={`flex flex-col sm:flex-row sm:items-center justify-between p-2.5 sm:p-3 rounded-xl border gap-2.5 transition-all ${
-                  isEnemy
-                    ? 'bg-red-950/30 border-red-900/50'
-                    : 'bg-blue-950/30 border-blue-900/50'
+                draggable={true}
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('text/plain', String(index));
+                  e.dataTransfer.effectAllowed = 'move';
+                  setDraggedIndex(index);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverIndex !== index) {
+                    setDragOverIndex(index);
+                  }
+                }}
+                onDragLeave={() => {
+                  if (dragOverIndex === index) {
+                    setDragOverIndex(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleDrop(index);
+                }}
+                onDragEnd={() => {
+                  setDraggedIndex(null);
+                  setDragOverIndex(null);
+                }}
+                className={`flex flex-col sm:flex-row sm:items-center justify-between p-2.5 sm:p-3 rounded-xl border gap-2.5 transition-all select-none ${
+                  isDragging
+                    ? 'opacity-35 scale-[0.98] border-dashed border-purple-400 bg-purple-950/20'
+                    : isDragOver
+                    ? 'ring-2 ring-purple-400 border-purple-400 bg-purple-900/40 shadow-lg shadow-purple-950/60'
+                    : isEnemy
+                    ? 'bg-red-950/30 border-red-900/50 hover:border-red-700/60'
+                    : 'bg-blue-950/30 border-blue-900/50 hover:border-blue-700/60'
                 }`}
               >
-                {/* Combatant Avatar and Identity */}
-                <div className="flex items-center gap-2.5 min-w-0">
+                {/* Drag Handle + Combatant Avatar and Identity */}
+                <div className="flex items-center gap-2 min-w-0">
+                  {/* Grip Handle */}
+                  <div
+                    className="p-1 rounded text-slate-500 hover:text-purple-300 hover:bg-[#1a1c2b] cursor-grab active:cursor-grabbing transition-colors shrink-0"
+                    title="Arrastrar para reordenar turno manualmente"
+                  >
+                    <GripVertical className="w-4 h-4" />
+                  </div>
+
                   <span className="font-mono text-xs sm:text-sm font-black text-amber-400 w-6 shrink-0 text-center">
                     #{index + 1}
                   </span>
@@ -289,23 +399,25 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
                     </button>
                   </div>
 
-                  {/* Manual Reorder Buttons (for resolving ties in the same initiative roll) */}
+                  {/* Manual Reorder Buttons (Accessibility & Touch backup) */}
                   <div className="flex items-center gap-1" title="Ajustar desempate de turno manualmente">
                     <button
+                      type="button"
                       onClick={() => moveUp(index)}
                       disabled={index === 0}
                       aria-label={`Subir turno de ${combatant.name}`}
                       className="p-1.5 rounded-lg bg-[#141624] hover:bg-purple-900/60 disabled:opacity-25 text-slate-300 transition-colors cursor-pointer"
-                      title="Subir de posición en empate"
+                      title="Subir de posición en turno"
                     >
                       <ArrowUp className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      type="button"
                       onClick={() => moveDown(index)}
                       disabled={index === orderList.length - 1}
                       aria-label={`Bajar turno de ${combatant.name}`}
                       className="p-1.5 rounded-lg bg-[#141624] hover:bg-purple-900/60 disabled:opacity-25 text-slate-300 transition-colors cursor-pointer"
-                      title="Bajar de posición en empate"
+                      title="Bajar de posición en turno"
                     >
                       <ArrowDown className="w-3.5 h-3.5" />
                     </button>
@@ -322,25 +434,30 @@ export const CombatOrderModal: React.FC<CombatOrderModalProps> = ({
             <input
               type="checkbox"
               checked={autoSortOnSave}
-              onChange={(e) => setAutoSortOnSave(e.target.checked)}
+              onChange={(e) => {
+                setAutoSortOnSave(e.target.checked);
+                if (e.target.checked) setIsManualOverride(false);
+              }}
               className="accent-purple-500 rounded cursor-pointer"
             />
-            <span>Ordenar automáticamente de mayor a menor al guardar</span>
+            <span>Forzar auto-orden por iniciativa numérica al guardar</span>
           </label>
 
           <div className="flex items-center justify-end gap-2">
             <button
+              type="button"
               onClick={onClose}
               className="px-3 py-2 rounded-xl bg-[#161824] hover:bg-[#202234] text-slate-300 text-xs font-mono font-semibold transition-colors cursor-pointer"
             >
               Cancelar
             </button>
             <button
+              type="button"
               onClick={handleSave}
               className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-mono font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/60 transition-all active:scale-95 cursor-pointer"
             >
               <Check className="w-4 h-4" />
-              <span>Guardar y Aplicar Iniciativas</span>
+              <span>Guardar y Aplicar Orden</span>
             </button>
           </div>
         </div>

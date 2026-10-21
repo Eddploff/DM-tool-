@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Combatant, CombatAction, DamageType } from '../types/combat.ts';
+import { Combatant, CombatAction, DamageType, CombatantResource } from '../types/combat.ts';
 import { PRESET_AVATARS } from '../utils/defaultData.ts';
 import { playMenuBlip } from '../utils/soundEffects.ts';
+import { DeathSavesWidget } from './DeathSavesWidget.tsx';
 import {
   X,
   Upload,
@@ -9,9 +10,14 @@ import {
   Shield,
   Swords,
   Plus,
+  Minus,
   Trash2,
   Check,
   Sparkles,
+  RotateCcw,
+  Zap,
+  Layers,
+  CircleDot,
 } from 'lucide-react';
 
 interface CharacterCardModalProps {
@@ -22,6 +28,23 @@ interface CharacterCardModalProps {
   isDM: boolean;
 }
 
+const RESOURCE_PRESETS: Array<{
+  name: string;
+  max: number;
+  category: 'spell' | 'class' | 'item' | 'other';
+  color: string;
+  icon: string;
+}> = [
+  { name: 'Espacios Hechizo Niv. 1', max: 4, category: 'spell', color: '#38bdf8', icon: '🔮' },
+  { name: 'Espacios Hechizo Niv. 2', max: 3, category: 'spell', color: '#818cf8', icon: '🔮' },
+  { name: 'Espacios Hechizo Niv. 3', max: 2, category: 'spell', color: '#c084fc', icon: '🔮' },
+  { name: 'Puntos de Ki', max: 5, category: 'class', color: '#facc15', icon: '☯️' },
+  { name: 'Flechas / Munición', max: 20, category: 'item', color: '#4ade80', icon: '🏹' },
+  { name: 'Furia Bárbara', max: 3, category: 'class', color: '#ef4444', icon: '🩸' },
+  { name: 'Dados Superioridad', max: 4, category: 'class', color: '#fb923c', icon: '🎲' },
+  { name: 'Imposición de Manos', max: 25, category: 'class', color: '#fbbf24', icon: '✨' },
+];
+
 export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
   combatant,
   isOpen,
@@ -29,11 +52,20 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
   onSave,
   isDM,
 }) => {
-  const [form, setForm] = useState<Combatant>({ ...combatant });
+  const [form, setForm] = useState<Combatant>({
+    ...combatant,
+    resources: combatant.resources ? [...combatant.resources] : [],
+  });
   const [newActionName, setNewActionName] = useState('');
   const [newActionType, setNewActionType] = useState<'attack' | 'heal' | 'spell'>('attack');
   const [newActionDice, setNewActionDice] = useState('1d8+2');
   const [newActionDesc, setNewActionDesc] = useState('');
+
+  // New Resource pool form state
+  const [newResName, setNewResName] = useState('');
+  const [newResMax, setNewResMax] = useState<number>(4);
+  const [newResCategory, setNewResCategory] = useState<'spell' | 'class' | 'item' | 'other'>('spell');
+  const [newResColor, setNewResColor] = useState<string>('#38bdf8');
 
   if (!isOpen) return null;
 
@@ -72,6 +104,92 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
     setForm((prev) => ({
       ...prev,
       actions: prev.actions.filter((a) => a.id !== id),
+    }));
+  };
+
+  // Resource Pool helpers
+  const handleAddResource = (
+    name: string,
+    max: number,
+    category: 'spell' | 'class' | 'item' | 'other' = 'spell',
+    color: string = '#38bdf8'
+  ) => {
+    if (!name.trim()) return;
+    playMenuBlip();
+    const safeMax = Math.max(1, max || 1);
+    const newRes: CombatantResource = {
+      id: `res-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      name: name.trim(),
+      current: safeMax,
+      max: safeMax,
+      category,
+      color,
+    };
+    setForm((prev) => ({
+      ...prev,
+      resources: [...(prev.resources || []), newRes],
+    }));
+    setNewResName('');
+  };
+
+  const handleRemoveResource = (id: string) => {
+    playMenuBlip();
+    setForm((prev) => ({
+      ...prev,
+      resources: (prev.resources || []).filter((r) => r.id !== id),
+    }));
+  };
+
+  const handleResourceDelta = (id: string, delta: number) => {
+    playMenuBlip();
+    setForm((prev) => ({
+      ...prev,
+      resources: (prev.resources || []).map((r) => {
+        if (r.id !== id) return r;
+        return {
+          ...r,
+          current: Math.max(0, Math.min(r.max, r.current + delta)),
+        };
+      }),
+    }));
+  };
+
+  const handleResourceCurrentChange = (id: string, val: number) => {
+    setForm((prev) => ({
+      ...prev,
+      resources: (prev.resources || []).map((r) => {
+        if (r.id !== id) return r;
+        return {
+          ...r,
+          current: Math.max(0, Math.min(r.max, isNaN(val) ? 0 : val)),
+        };
+      }),
+    }));
+  };
+
+  const handleResourceMaxChange = (id: string, val: number) => {
+    const safeMax = Math.max(1, isNaN(val) ? 1 : val);
+    setForm((prev) => ({
+      ...prev,
+      resources: (prev.resources || []).map((r) => {
+        if (r.id !== id) return r;
+        return {
+          ...r,
+          max: safeMax,
+          current: Math.min(r.current, safeMax),
+        };
+      }),
+    }));
+  };
+
+  const handleReplenishAllResources = () => {
+    playMenuBlip();
+    setForm((prev) => ({
+      ...prev,
+      resources: (prev.resources || []).map((r) => ({
+        ...r,
+        current: r.max,
+      })),
     }));
   };
 
@@ -263,6 +381,24 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
             </div>
           </div>
 
+          {/* Death Saves (Salvaciones de Muerte) */}
+          {(form.currentHp === 0 ||
+            (form.deathSaves &&
+              ((form.deathSaves.successes || 0) > 0 ||
+                (form.deathSaves.failures || 0) > 0 ||
+                form.deathSaves.isStable))) && (
+            <div className="bg-slate-900/60 p-3 rounded-xl border border-rose-900/50">
+              <div className="text-xs font-bold text-rose-300 mb-2 flex items-center gap-1.5">
+                <span>💀 Salvaciones contra la Muerte (Personaje a 0 HP)</span>
+              </div>
+              <DeathSavesWidget
+                combatant={form}
+                onUpdateCombatant={(updated) => setForm(updated)}
+                isDM={true}
+              />
+            </div>
+          )}
+
           {/* Resistencias a Daño (Mitad de daño efectivo) */}
           <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800">
             <div className="flex items-center justify-between mb-1.5">
@@ -348,6 +484,303 @@ export const CharacterCardModal: React.FC<CharacterCardModalProps> = ({
                   );
                 })}
               </div>
+            </div>
+          </div>
+
+          {/* Resources & Replenishable Pools (Spell Slots, Ki Points, Ammunition, etc.) */}
+          <div className="bg-[#10121d]/90 p-3.5 rounded-xl border border-indigo-500/30 flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#232635]">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-indigo-950/80 border border-indigo-500/40 text-indigo-300">
+                  <Sparkles className="w-4 h-4 text-indigo-400" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-slate-100 font-mono flex items-center gap-2">
+                    <span>Recursos Gastables &amp; Espacios (Pools)</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-950 text-indigo-300 border border-indigo-600/40 font-mono">
+                      {(form.resources || []).length} pools
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Rastrea pools reabastecibles como espacios de conjuro, puntos de ki, furia o munición.
+                  </p>
+                </div>
+              </div>
+
+              {(form.resources && form.resources.length > 0) && (
+                <button
+                  type="button"
+                  onClick={handleReplenishAllResources}
+                  className="px-2.5 py-1 rounded-lg bg-[#181a28] hover:bg-emerald-950/70 border border-emerald-600/40 hover:border-emerald-500 text-emerald-300 text-xs font-mono font-medium flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto"
+                  title="Restablece todos los recursos al máximo (Descanso Largo / Long Rest)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Descanso Largo (Recargar Todo)</span>
+                </button>
+              )}
+            </div>
+
+            {/* Existing Resources List */}
+            {(!form.resources || form.resources.length === 0) ? (
+              <div className="text-center py-3 px-2 bg-slate-950/40 rounded-lg border border-dashed border-slate-800 text-xs text-slate-400 font-mono">
+                No hay pools de recursos registrados para este combatiente. Puedes añadir uno abajo o hacer clic en un preset rápido:
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                {form.resources.map((res) => {
+                  const percent = res.max > 0 ? Math.round((res.current / res.max) * 100) : 0;
+                  const resColor = res.color || '#38bdf8';
+
+                  return (
+                    <div
+                      key={res.id}
+                      className="bg-[#0b0d14] p-2.5 rounded-xl border border-slate-800 flex flex-col gap-2"
+                      style={{ borderLeftWidth: '4px', borderLeftColor: resColor }}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        {/* Resource Label & Category */}
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold uppercase tracking-wide shrink-0"
+                            style={{
+                              backgroundColor: `${resColor}20`,
+                              color: resColor,
+                              border: `1px solid ${resColor}50`,
+                            }}
+                          >
+                            {res.category === 'spell'
+                              ? '🔮 Magia'
+                              : res.category === 'class'
+                              ? '⚔️ Clase'
+                              : res.category === 'item'
+                              ? '🏹 Objeto'
+                              : '✨ Recurso'}
+                          </span>
+                          <span className="font-bold text-xs text-slate-100 truncate">
+                            {res.name}
+                          </span>
+                        </div>
+
+                        {/* Counter Controls */}
+                        <div className="flex items-center gap-1.5 self-end sm:self-auto shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleResourceDelta(res.id, -1)}
+                            disabled={res.current <= 0}
+                            className="w-6 h-6 rounded bg-[#161824] hover:bg-slate-800 disabled:opacity-30 text-slate-200 flex items-center justify-center transition-colors cursor-pointer"
+                            title="Gastar 1"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+
+                          <div className="flex items-center gap-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-0.5">
+                            <input
+                              type="number"
+                              min="0"
+                              max={res.max}
+                              value={res.current}
+                              onChange={(e) =>
+                                handleResourceCurrentChange(res.id, parseInt(e.target.value, 10))
+                              }
+                              className="w-9 text-center bg-transparent font-mono font-bold text-xs focus:outline-none"
+                              style={{ color: resColor }}
+                            />
+                            <span className="text-slate-500 font-mono text-xs">/</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="999"
+                              value={res.max}
+                              onChange={(e) =>
+                                handleResourceMaxChange(res.id, parseInt(e.target.value, 10))
+                              }
+                              className="w-9 text-center bg-transparent font-mono text-slate-400 text-xs focus:outline-none"
+                              title="Máximo de este pool"
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleResourceDelta(res.id, 1)}
+                            disabled={res.current >= res.max}
+                            className="w-6 h-6 rounded bg-[#161824] hover:bg-slate-800 disabled:opacity-30 text-slate-200 flex items-center justify-center transition-colors cursor-pointer"
+                            title="Recuperar 1"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+
+                          {res.current < res.max && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                playMenuBlip();
+                                handleResourceCurrentChange(res.id, res.max);
+                              }}
+                              className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-600/40 text-emerald-300 transition-colors"
+                              title="Rellenar pool al máximo"
+                            >
+                              Max
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveResource(res.id)}
+                            className="p-1 rounded text-red-400 hover:text-red-300 hover:bg-slate-800 transition-colors ml-1"
+                            title="Eliminar este recurso"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Visual Pips or Progress Bar */}
+                      {res.max <= 12 ? (
+                        <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                          {Array.from({ length: res.max }).map((_, pipIdx) => {
+                            const isFilled = pipIdx < res.current;
+                            return (
+                              <button
+                                key={pipIdx}
+                                type="button"
+                                onClick={() => {
+                                  playMenuBlip();
+                                  if (res.current === pipIdx + 1) {
+                                    handleResourceCurrentChange(res.id, pipIdx);
+                                  } else {
+                                    handleResourceCurrentChange(res.id, pipIdx + 1);
+                                  }
+                                }}
+                                className="w-4 h-4 rounded-full border transition-all cursor-pointer flex items-center justify-center active:scale-90"
+                                style={{
+                                  backgroundColor: isFilled ? resColor : 'transparent',
+                                  borderColor: isFilled ? resColor : '#475569',
+                                  boxShadow: isFilled ? `0 0 6px ${resColor}80` : 'none',
+                                }}
+                                title={
+                                  isFilled
+                                    ? `Espacio #${pipIdx + 1} disponible (clic para gastar)`
+                                    : `Espacio #${pipIdx + 1} agotado (clic para recargar)`
+                                }
+                              />
+                            );
+                          })}
+                          <span className="text-[10px] font-mono text-slate-400 ml-1">
+                            {res.current} de {res.max} disponibles
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 pt-0.5">
+                          <div className="flex-1 h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                            <div
+                              className="h-full transition-all duration-300"
+                              style={{
+                                width: `${percent}%`,
+                                backgroundColor: resColor,
+                                boxShadow: `0 0 8px ${resColor}60`,
+                              }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            {percent}% ({res.current}/{res.max})
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Quick Presets Row */}
+            <div>
+              <span className="text-[10px] font-bold uppercase text-slate-400 font-mono block mb-1">
+                ⚡ Presets Rápidos D&amp;D 5e:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {RESOURCE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.name}
+                    type="button"
+                    onClick={() => handleAddResource(preset.name, preset.max, preset.category, preset.color)}
+                    className="px-2 py-1 rounded-lg bg-[#141724] hover:bg-indigo-950/80 border border-slate-700 hover:border-indigo-500/60 text-[11px] font-mono text-slate-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                    title={`Añadir ${preset.name} (${preset.max}/${preset.max})`}
+                  >
+                    <span>{preset.icon}</span>
+                    <span>{preset.name}</span>
+                    <span className="text-[10px] text-indigo-300 font-bold">({preset.max})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Add Custom Resource Row */}
+            <div className="pt-2 border-t border-[#232635] flex flex-wrap items-center gap-2 bg-[#090b10] p-2.5 rounded-xl border border-slate-800">
+              <input
+                type="text"
+                placeholder="Nombre del pool (ej. Puntos de Hechicería, Flechas +1)"
+                value={newResName}
+                onChange={(e) => setNewResName(e.target.value)}
+                className="bg-[#121420] border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white flex-1 min-w-[140px]"
+              />
+
+              <select
+                value={newResCategory}
+                onChange={(e) =>
+                  setNewResCategory(e.target.value as 'spell' | 'class' | 'item' | 'other')
+                }
+                className="bg-[#121420] border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 cursor-pointer"
+              >
+                <option value="spell">🔮 Hechizo / Magia</option>
+                <option value="class">⚔️ Rasgo de Clase / Ki / Furia</option>
+                <option value="item">🏹 Munición / Objeto</option>
+                <option value="other">✨ Otro Pool</option>
+              </select>
+
+              <div className="flex items-center gap-1 bg-[#121420] border border-slate-700 rounded-lg px-2 py-1">
+                <span className="text-[10px] text-slate-400 font-mono">Max:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="999"
+                  value={newResMax}
+                  onChange={(e) => setNewResMax(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="bg-transparent font-mono text-xs text-white w-12 text-center focus:outline-none"
+                />
+              </div>
+
+              {/* Color picker swatches */}
+              <div className="flex items-center gap-1 bg-[#121420] border border-slate-700 rounded-lg px-1.5 py-1">
+                {[
+                  { color: '#38bdf8', label: 'Azul' },
+                  { color: '#818cf8', label: 'Índigo' },
+                  { color: '#c084fc', label: 'Púrpura' },
+                  { color: '#facc15', label: 'Dorado' },
+                  { color: '#4ade80', label: 'Verde' },
+                  { color: '#f87171', label: 'Rojo' },
+                ].map((swatch) => (
+                  <button
+                    key={swatch.color}
+                    type="button"
+                    onClick={() => setNewResColor(swatch.color)}
+                    className={`w-3.5 h-3.5 rounded-full transition-transform ${
+                      newResColor === swatch.color ? 'ring-2 ring-white scale-125' : 'opacity-70 hover:opacity-100'
+                    }`}
+                    style={{ backgroundColor: swatch.color }}
+                    title={swatch.label}
+                  />
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleAddResource(newResName, newResMax, newResCategory, newResColor)}
+                disabled={!newResName.trim()}
+                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-xs font-mono font-bold flex items-center gap-1 transition-all cursor-pointer shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Añadir Pool</span>
+              </button>
             </div>
           </div>
 

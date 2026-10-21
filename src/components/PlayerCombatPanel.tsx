@@ -15,6 +15,7 @@ import {
   cycleDigit,
   createCombatLog,
   getSafeHpValues,
+  adjustCombatantResource,
 } from '../utils/combatLogic.ts';
 import {
   saveAndBroadcastEncounter,
@@ -22,11 +23,13 @@ import {
 } from '../utils/syncManager.ts';
 import {
   playSlashSound,
+  playAttackSoundByDamageType,
   playHealSound,
   playMenuBlip,
 } from '../utils/soundEffects.ts';
 import { StatusBadgesOverlay } from './StatusBadgesOverlay.tsx';
 import { DamageTypeDropdown } from './DamageTypeDropdown.tsx';
+import { DeathSavesWidget } from './DeathSavesWidget.tsx';
 import {
   Swords,
   Heart,
@@ -41,6 +44,7 @@ import {
   Edit,
   RotateCcw,
   Sparkles,
+  Skull,
 } from 'lucide-react';
 
 interface PlayerCombatPanelProps {
@@ -102,7 +106,7 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
     if (!target || totalAmount <= 0) return;
 
     const { updated, actualDamage, isResisted } = applyDamage(target, totalAmount, damageType);
-    playSlashSound();
+    playAttackSoundByDamageType(damageType);
 
     broadcastFloatingEffect({
       id: `float-${Date.now()}`,
@@ -223,8 +227,48 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
     setRecentActionMsg(`Asignaste +${amountAdded} HP Temporales a ${target.name}.`);
   };
 
+  const handleQuickResourceDelta = (resId: string, delta: number) => {
+    playMenuBlip();
+    const updatedPlayer = adjustCombatantResource(player, resId, delta);
+    const nextCombatants = encounter.combatants.map((c) =>
+      c.id === player.id ? updatedPlayer : c
+    );
+    const nextState: EncounterState = {
+      ...encounter,
+      combatants: nextCombatants,
+      lastUpdated: Date.now(),
+    };
+    if (onUpdateEncounter) {
+      onUpdateEncounter(nextState);
+    } else {
+      saveAndBroadcastEncounter(nextState, true);
+    }
+  };
+
+  const [showDeathSavesExpanded, setShowDeathSavesExpanded] = useState<boolean>(false);
+
+  const handleUpdateDeathSaves = (updated: Combatant, logMsg?: string) => {
+    const nextCombatants = encounter.combatants.map((c) =>
+      c.id === updated.id ? updated : c
+    );
+    const nextLog = logMsg
+      ? [createCombatLog(player.name, 'Salvación Muerte', logMsg, 'system'), ...encounter.log]
+      : encounter.log;
+    const nextState: EncounterState = {
+      ...encounter,
+      combatants: nextCombatants,
+      log: nextLog,
+      lastUpdated: Date.now(),
+    };
+    if (onUpdateEncounter) {
+      onUpdateEncounter(nextState);
+    } else {
+      saveAndBroadcastEncounter(nextState, true);
+    }
+  };
+
   return (
-    <div className="bg-[#0e1017]/95 rounded-2xl border border-purple-500/25 shadow-2xl p-3 sm:p-5 text-slate-200 flex flex-col gap-4 backdrop-blur-xl ring-1 ring-white/5">
+    <div className="bg-[#0d0e12] rounded-xl border border-[#222532] shadow-xl p-3 sm:p-5 text-slate-200 flex flex-col gap-4">
       {/* Top Banner: Player Identity & ONLY Own HP */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#232635]">
         <div className="flex items-center gap-3">
@@ -232,9 +276,9 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
             <img
               src={player.avatar}
               alt={player.name}
-              className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-purple-400 shadow-md object-cover bg-[#090a0f]"
+              className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-[#38bdf8] shadow-sm object-cover bg-[#090a0f]"
             />
-            <span className="absolute -bottom-1 -right-1 bg-purple-900/90 text-purple-200 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full border border-purple-500/50">
+            <span className="absolute -bottom-1 -right-1 bg-[#13222e] text-[#38bdf8] text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full border border-[#1e4868]">
               Lv.{player.level || 1}
             </span>
           </div>
@@ -242,18 +286,18 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="font-bold text-base sm:text-lg text-slate-100 truncate">{player.name}</h2>
-              <span className="text-xs text-purple-300 font-mono bg-purple-950/60 px-2 py-0.5 rounded border border-purple-700/50">
+              <span className="text-xs text-[#38bdf8] font-mono bg-[#13222e] px-2 py-0.5 rounded border border-[#1e4868]">
                 {player.jobClass}
               </span>
             </div>
             <p className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
-              <span className="text-purple-300 font-mono text-[11px] sm:text-xs">TTRPG Presencial • Hoja y Acciones</span>
+              <span className="text-[#38bdf8] font-mono text-[11px] sm:text-xs">TTRPG Presencial • Hoja y Acciones</span>
             </p>
           </div>
         </div>
 
         {/* Player's Own HP & Resistances Card */}
-        <div className="bg-[#12141d]/90 rounded-xl p-3 border border-purple-500/20 w-full sm:w-auto sm:min-w-[260px] shadow-inner flex flex-col gap-2">
+        <div className="bg-[#12141c] rounded-xl p-3 border border-[#222532] w-full sm:w-auto sm:min-w-[260px] shadow-sm flex flex-col gap-2">
           {(() => {
             const { current: safeCurrent, max: safeMax, percent: hpPercent } = getSafeHpValues(
               player.currentHp,
@@ -262,22 +306,22 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
             return (
               <>
                 <div className="flex items-center justify-between text-xs font-mono">
-                  <span className="font-bold text-emerald-400 flex items-center gap-1">
-                    <Heart className="w-3.5 h-3.5 fill-emerald-500" />
+                  <span className="font-bold text-[#10b981] flex items-center gap-1">
+                    <Heart className="w-3.5 h-3.5 fill-[#10b981]" />
                     TU SALUD (HP)
                   </span>
                   <span className="font-bold text-sm text-slate-100">
                     {safeCurrent} / {safeMax} ({hpPercent}%)
                   </span>
                 </div>
-                <div className="w-full h-3 bg-[#0a0b10] rounded-full overflow-hidden border border-slate-800">
+                <div className="w-full h-3 bg-[#0d0e13] rounded-full overflow-hidden border border-[#232737]">
                   <div
                     className={`h-full transition-all duration-300 ${
                       hpPercent > 50
-                        ? 'bg-gradient-to-r from-emerald-500 to-teal-400 shadow-[0_0_8px_rgba(52,211,153,0.4)]'
+                        ? 'bg-[#10b981]'
                         : hpPercent > 25
-                        ? 'bg-gradient-to-r from-amber-500 to-yellow-400'
-                        : 'bg-gradient-to-r from-red-600 to-rose-500 animate-pulse'
+                        ? 'bg-[#e5a93c]'
+                        : 'bg-[#ef4444]'
                     }`}
                     style={{
                       width: `${hpPercent}%`,
@@ -288,6 +332,42 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
             );
           })()}
 
+          {/* Death Saves Section: Shown automatically when at 0 HP, or when toggled */}
+          {(player.currentHp === 0 ||
+            (player.deathSaves &&
+              ((player.deathSaves.successes || 0) > 0 ||
+                (player.deathSaves.failures || 0) > 0 ||
+                player.deathSaves.isStable)) ||
+            showDeathSavesExpanded) && (
+            <div className="pt-2 border-t border-rose-900/50">
+              <DeathSavesWidget
+                combatant={player}
+                onUpdateCombatant={handleUpdateDeathSaves}
+                isDM={false}
+              />
+            </div>
+          )}
+
+          {/* Optional manual toggle for Death Saves if player has > 0 HP */}
+          {player.currentHp > 0 &&
+            (!player.deathSaves ||
+              ((player.deathSaves.successes || 0) === 0 &&
+                (player.deathSaves.failures || 0) === 0 &&
+                !player.deathSaves.isStable)) && (
+              <button
+                type="button"
+                onClick={() => {
+                  playMenuBlip();
+                  setShowDeathSavesExpanded((prev) => !prev);
+                }}
+                className="text-[10px] text-slate-500 hover:text-rose-300 font-mono flex items-center gap-1 transition-colors self-start cursor-pointer"
+                title="Tiradas de Salvación contra la Muerte (D&D 5e)"
+              >
+                <Skull className="w-3 h-3 text-rose-400" />
+                <span>{showDeathSavesExpanded ? 'Ocultar Salvaciones' : 'Salvaciones Muerte (0 HP)'}</span>
+              </button>
+            )}
+
           {/* Active resistances if any */}
           {player.damageResistances && player.damageResistances.length > 0 && (
             <div className="text-[10px] text-purple-300 font-mono font-medium flex items-center gap-1 flex-wrap">
@@ -296,9 +376,65 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
             </div>
           )}
 
+          {/* Replenishable Resource Pools (Spell slots, Ki, Ammo) */}
+          {player.resources && player.resources.length > 0 && (
+            <div className="pt-1.5 border-t border-[#232635] flex flex-col gap-1">
+              <div className="flex items-center justify-between text-[10px] font-mono text-purple-300">
+                <span className="flex items-center gap-1 font-bold">
+                  <Sparkles className="w-3 h-3 text-purple-400" />
+                  <span>Tus Recursos:</span>
+                </span>
+                <span className="text-[9px] text-slate-500">Toca + / - para gastar</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {player.resources.map((res) => {
+                  const resColor = res.color || '#38bdf8';
+                  return (
+                    <div
+                      key={res.id}
+                      className="bg-[#0b0d14] px-2 py-1 rounded-lg border border-slate-800 flex items-center gap-1.5"
+                      style={{ borderLeftWidth: '3px', borderLeftColor: resColor }}
+                    >
+                      <span className="text-[11px] font-bold text-slate-200 truncate max-w-[100px]">
+                        {res.name}
+                      </span>
+                      <div className="flex items-center gap-0.5 ml-auto">
+                        <button
+                          type="button"
+                          onClick={() => handleQuickResourceDelta(res.id, -1)}
+                          disabled={res.current <= 0}
+                          className="w-4 h-4 rounded bg-[#161824] hover:bg-slate-700 disabled:opacity-25 text-slate-300 flex items-center justify-center text-[10px] transition-colors cursor-pointer"
+                          title="Gastar 1"
+                        >
+                          -
+                        </button>
+                        <span
+                          className="font-mono text-xs font-bold px-1"
+                          style={{ color: resColor }}
+                        >
+                          {res.current}/{res.max}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickResourceDelta(res.id, 1)}
+                          disabled={res.current >= res.max}
+                          className="w-4 h-4 rounded bg-[#161824] hover:bg-slate-700 disabled:opacity-25 text-slate-300 flex items-center justify-center text-[10px] transition-colors cursor-pointer"
+                          title="Recuperar 1"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-between items-center pt-1 border-t border-[#232635] gap-2">
             {onOpenTokenSelect && (
               <button
+                type="button"
                 onClick={onOpenTokenSelect}
                 className="text-[11px] text-slate-400 hover:text-purple-300 transition-colors cursor-pointer"
               >
@@ -306,11 +442,12 @@ export const PlayerCombatPanel: React.FC<PlayerCombatPanelProps> = ({
               </button>
             )}
             <button
+              type="button"
               onClick={() => onOpenCharacterSheet(player)}
               className="text-xs px-2.5 py-1 rounded-lg bg-[#191827] hover:bg-purple-950/70 border border-purple-500/30 text-purple-200 font-bold flex items-center gap-1 transition-all cursor-pointer shadow ml-auto"
             >
               <Edit className="w-3 h-3 text-purple-400" />
-              <span>Editar Hoja (HP &amp; Resistencias)</span>
+              <span>Editar Hoja &amp; Recursos</span>
             </button>
           </div>
 

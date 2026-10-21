@@ -8,6 +8,7 @@ import type {
   AoETemplate,
   GlobalEffectId,
   InitiativeRollResult,
+  CombatantResource,
 } from '../types/combat.ts';
 import {
   PHYSICAL_DAMAGE_TYPES,
@@ -24,7 +25,8 @@ export function applyDamage(
   combatant: Combatant,
   damage: number,
   damageType: DamageType = 'cortante',
-  activeGlobalEffects?: GlobalEffectId[]
+  activeGlobalEffects?: GlobalEffectId[],
+  isCrit?: boolean
 ): {
   updated: Combatant;
   actualDamage: number;
@@ -75,12 +77,28 @@ export function applyDamage(
   const actualDamage = currentTempHp - newTempHp + (previousHp - newHp);
   const wasKilled = previousHp > 0 && newHp === 0;
 
+  // In D&D 5e: If already at 0 HP and taking damage, add death save failure (2 if crit)
+  let deathSaves = combatant.deathSaves;
+  if (previousHp === 0 && actualDamage > 0) {
+    const currentFailures = deathSaves?.failures || 0;
+    const addedFailures = isCrit ? 2 : 1;
+    deathSaves = {
+      successes: deathSaves?.successes || 0,
+      failures: Math.min(3, currentFailures + addedFailures),
+      isStable: false,
+    };
+  } else if (wasKilled && combatant.type === 'player') {
+    // Just dropped to 0 HP: initialize fresh death saves
+    deathSaves = { successes: 0, failures: 0, isStable: false };
+  }
+
   return {
     updated: {
       ...combatant,
       maxHp,
       currentHp: newHp,
       tempHp: newTempHp,
+      deathSaves,
     },
     actualDamage,
     wasKilled,
@@ -113,12 +131,24 @@ export function applyHeal(
   const actualHealed = newHp - previousHp;
   const wasRevived = previousHp === 0 && newHp > 0;
 
+  // Healing above 0 HP resets death saves and clears unconscious state
+  let deathSaves = combatant.deathSaves;
+  let statusEffects = combatant.statusEffects || [];
+  if (newHp > 0) {
+    deathSaves = { successes: 0, failures: 0, isStable: false };
+    if (wasRevived) {
+      statusEffects = statusEffects.filter((s) => s.toLowerCase() !== 'inconsciente');
+    }
+  }
+
   return {
     updated: {
       ...combatant,
       maxHp,
       currentHp: newHp,
       tempHp: Number(combatant.tempHp) || 0,
+      deathSaves,
+      statusEffects,
     },
     actualHealed,
     wasRevived,
@@ -242,8 +272,8 @@ export function createCombatLog(
   actorName: string,
   targetName: string,
   actionName: string,
-  type: 'damage' | 'heal' | 'status' | 'system',
-  amount: number,
+  type: 'damage' | 'heal' | 'status' | 'system' | 'roll' | 'chat',
+  amount: number = 0,
   isCrit: boolean = false,
   notes?: string,
   damageType?: DamageType,
@@ -306,6 +336,96 @@ export function getCombatantsInAoE(
       return dist <= cellRadius + 0.35;
     }
   });
+}
+
+export interface DistanceInfo {
+  dx: number;
+  dy: number;
+  squares: number;
+  feet: number;
+  exactDistance: number;
+  exactFeet: number;
+}
+
+/**
+ * Calculates distance between two combatants on the 5-ft tactical grid.
+ * - squares: D&D 5e Chebyshev distance (max(|dx|, |dy|))
+ * - feet: Chebyshev squares * 5 ft
+ * - exactDistance: Euclidean distance sqrt(dx² + dy²)
+ * - exactFeet: Euclidean distance * 5 ft (rounded)
+ */
+export function calculateGridDistance(
+  c1: { gridPosition?: { col: number; row: number } },
+  c2: { gridPosition?: { col: number; row: number } },
+  defaultPos1: { col: number; row: number } = { col: 0, row: 0 },
+  defaultPos2: { col: number; row: number } = { col: 0, row: 0 }
+): DistanceInfo {
+  const p1 = c1.gridPosition || defaultPos1;
+  const p2 = c2.gridPosition || defaultPos2;
+  const dx = Math.abs(p1.col - p2.col);
+  const dy = Math.abs(p1.row - p2.row);
+  const squares = Math.max(dx, dy);
+  const feet = squares * 5;
+  const exactDistance = Math.hypot(p1.col - p2.col, p1.row - p2.row);
+  const exactFeet = Math.round(exactDistance * 5);
+  return { dx, dy, squares, feet, exactDistance, exactFeet };
+}
+
+export interface PotentialTarget {
+  combatant: Combatant;
+  distance: DistanceInfo;
+  isHostile: boolean;
+}
+
+/**
+ * Gets all potential targets for an actor, categorized as hostile vs friendly,
+ * sorted by proximity (nearest first).
+ */
+export function getPotentialTargets(
+  actor: Combatant,
+  combatants: Combatant[],
+  getPosition?: (c: Combatant) => { col: number; row: number }
+): {
+  hostileTargets: PotentialTarget[];
+  friendlyTargets: PotentialTarget[];
+  nearestEnemy: PotentialTarget | null;
+} {
+  const actorPos = getPosition ? getPosition(actor) : actor.gridPosition || { col: 0, row: 0 };
+  const living = combatants.filter((c) => c.currentHp > 0 && c.id !== actor.id);
+
+  const hostileList: PotentialTarget[] = [];
+  const friendlyList: PotentialTarget[] = [];
+
+  living.forEach((c) => {
+    const targetPos = getPosition ? getPosition(c) : c.gridPosition || { col: 0, row: 0 };
+    const distance = calculateGridDistance(
+      { gridPosition: actorPos },
+      { gridPosition: targetPos }
+    );
+    const isHostile = actor.type !== c.type;
+    const targetObj: PotentialTarget = { combatant: c, distance, isHostile };
+    if (isHostile) {
+      hostileList.push(targetObj);
+    } else {
+      friendlyList.push(targetObj);
+    }
+  });
+
+  // Sort hostile targets by Euclidean distance, tie-breaking by lowest current HP
+  hostileList.sort((a, b) => {
+    if (Math.abs(a.distance.exactDistance - b.distance.exactDistance) > 0.001) {
+      return a.distance.exactDistance - b.distance.exactDistance;
+    }
+    return a.combatant.currentHp - b.combatant.currentHp;
+  });
+
+  friendlyList.sort((a, b) => a.distance.exactDistance - b.distance.exactDistance);
+
+  return {
+    hostileTargets: hostileList,
+    friendlyTargets: friendlyList,
+    nearestEnemy: hostileList.length > 0 ? hostileList[0] : null,
+  };
 }
 
 /**
@@ -528,6 +648,71 @@ export function rollInitiativeForAll(
 }
 
 /**
+ * Sorts an array of combatant IDs purely based on their existing initiative values (descending).
+ * In case of ties, preserves stable relative ordering, or breaks ties with player before enemy.
+ */
+export function sortCombatantsByInitiative(
+  combatants: Combatant[],
+  initiatives?: Record<string, number>,
+  currentOrder?: string[]
+): string[] {
+  const ids = currentOrder ? [...currentOrder] : combatants.map((c) => c.id);
+  const combatantMap = new Map(combatants.map((c) => [c.id, c]));
+
+  return ids.sort((idA, idB) => {
+    const initA =
+      initiatives && initiatives[idA] !== undefined
+        ? initiatives[idA]
+        : combatantMap.get(idA)?.initiative ?? 10;
+    const initB =
+      initiatives && initiatives[idB] !== undefined
+        ? initiatives[idB]
+        : combatantMap.get(idB)?.initiative ?? 10;
+
+    if (initB !== initA) {
+      return initB - initA;
+    }
+
+    // Tie-breaker: players over enemies
+    const typeA = combatantMap.get(idA)?.type;
+    const typeB = combatantMap.get(idB)?.type;
+    if (typeA === 'player' && typeB === 'enemy') return -1;
+    if (typeA === 'enemy' && typeB === 'player') return 1;
+
+    return 0;
+  });
+}
+
+/**
+ * Adjusts a combatant resource (e.g. spending or regaining spell slots, ki, arrows)
+ * Clamps current amount between 0 and max.
+ */
+export function adjustCombatantResource(
+  combatant: Combatant,
+  resourceId: string,
+  delta: number
+): Combatant {
+  if (!combatant.resources || combatant.resources.length === 0) return combatant;
+  const nextResources = combatant.resources.map((res) => {
+    if (res.id !== resourceId) return res;
+    const nextCurrent = Math.max(0, Math.min(res.max, res.current + delta));
+    return { ...res, current: nextCurrent };
+  });
+  return { ...combatant, resources: nextResources };
+}
+
+/**
+ * Resets all resources of a combatant to their maximum values (e.g. Long Rest / Descanso Largo).
+ */
+export function resetCombatantResources(combatant: Combatant): Combatant {
+  if (!combatant.resources || combatant.resources.length === 0) return combatant;
+  return {
+    ...combatant,
+    resources: combatant.resources.map((res) => ({ ...res, current: res.max })),
+  };
+}
+
+/**
  * Bulletproof helper to calculate safe current HP, max HP, ratio (0 to 1), and integer percentage (0 to 100).
  * Guaranteed to never return NaN, even if currentHp or maxHp is undefined, null, or string.
  */
@@ -643,7 +828,7 @@ export function resetEncounterToFull(
     surpriseSide: null,
     combatants: finalCombatants,
     turnOrder: finalTurnOrder,
-    log: [resetLog, ...encounter.log],
+    log: [resetLog],
     lastUpdated: Date.now(),
   };
 
@@ -652,3 +837,156 @@ export function resetEncounterToFull(
     initiativeResults,
   };
 }
+
+/**
+ * Records a Death Saving Throw roll (d20) for a combatant at 0 HP according to D&D 5e rules:
+ * - Natural 20: Immediately regains 1 HP and wakes up! Death saves reset.
+ * - 10 to 19: 1 Success. If 3 successes are accumulated, becomes Stable.
+ * - 2 to 9: 1 Failure. If 3 failures are accumulated, character dies.
+ * - Natural 1: Counts as 2 Failures!
+ */
+export function recordDeathSaveRoll(
+  combatant: Combatant,
+  d20Roll: number
+): {
+  updated: Combatant;
+  result: 'nat20_revived' | 'success' | 'stabilized' | 'failure' | 'nat1_double_failure' | 'dead';
+  message: string;
+} {
+  const currentSaves = combatant.deathSaves || { successes: 0, failures: 0, isStable: false };
+  let successes = currentSaves.successes || 0;
+  let failures = currentSaves.failures || 0;
+  let isStable = currentSaves.isStable || false;
+
+  if (d20Roll === 20) {
+    // Natural 20 restores 1 HP
+    return {
+      updated: {
+        ...combatant,
+        currentHp: 1,
+        deathSaves: { successes: 0, failures: 0, isStable: false },
+        statusEffects: (combatant.statusEffects || []).filter((s) => s.toLowerCase() !== 'inconsciente'),
+      },
+      result: 'nat20_revived',
+      message: `¡20 NATURAL! ${combatant.name} recupera la consciencia con 1 HP milagroso.`,
+    };
+  }
+
+  if (d20Roll === 1) {
+    // Natural 1 = 2 failures
+    failures += 2;
+    const isDead = failures >= 3;
+    return {
+      updated: {
+        ...combatant,
+        deathSaves: { successes, failures: Math.min(3, failures), isStable: false },
+      },
+      result: isDead ? 'dead' : 'nat1_double_failure',
+      message: isDead
+        ? `¡PIFIA (1)! ${combatant.name} acumula 2 fallos críticos y ha muerto.`
+        : `¡PIFIA (1)! ${combatant.name} sufre 2 fallos de salvación contra la muerte (${failures}/3).`,
+    };
+  }
+
+  if (d20Roll >= 10) {
+    successes += 1;
+    if (successes >= 3) {
+      isStable = true;
+      return {
+        updated: {
+          ...combatant,
+          deathSaves: { successes: 3, failures, isStable: true },
+        },
+        result: 'stabilized',
+        message: `¡3 Éxitos! ${combatant.name} se ha estabilizado (permanece a 0 HP pero ya no agoniza).`,
+      };
+    }
+    return {
+      updated: {
+        ...combatant,
+        deathSaves: { successes, failures, isStable: false },
+      },
+      result: 'success',
+      message: `Éxito de salvación contra la muerte (${d20Roll}): ${successes}/3 éxitos.`,
+    };
+  }
+
+  // Roll 2-9 = 1 failure
+  failures += 1;
+  const isDead = failures >= 3;
+  return {
+    updated: {
+      ...combatant,
+      deathSaves: { successes, failures: Math.min(3, failures), isStable: false },
+    },
+    result: isDead ? 'dead' : 'failure',
+    message: isDead
+      ? `Fallo (${d20Roll}): ${combatant.name} ha alcanzado 3 fallos de salvación contra la muerte y ha fallecido.`
+      : `Fallo de salvación contra la muerte (${d20Roll}): ${failures}/3 fallos.`,
+  };
+}
+
+/**
+ * Manually toggle or set death saves (for tabletop players rolling physical dice).
+ */
+export function setManualDeathSaves(
+  combatant: Combatant,
+  successes: number,
+  failures: number,
+  isStable?: boolean
+): Combatant {
+  const safeSuccesses = Math.max(0, Math.min(3, successes));
+  const safeFailures = Math.max(0, Math.min(3, failures));
+  return {
+    ...combatant,
+    deathSaves: {
+      successes: safeSuccesses,
+      failures: safeFailures,
+      isStable: isStable ?? (safeSuccesses >= 3),
+    },
+  };
+}
+
+/**
+ * Resets death saves to clean initial state.
+ */
+export function resetDeathSaves(combatant: Combatant): Combatant {
+  return {
+    ...combatant,
+    deathSaves: { successes: 0, failures: 0, isStable: false },
+  };
+}
+
+export type CombatLogFilterType = 'all' | 'damage' | 'rolls' | 'chat' | 'heal';
+
+/**
+ * Checks if a combat log entry corresponds to a dice roll.
+ */
+export function isCombatLogDiceRoll(entry: CombatLogEntry): boolean {
+  return (
+    entry.type === 'roll' ||
+    entry.actionName.toLowerCase().includes('tirada') ||
+    entry.actionName.toLowerCase().includes('dado') ||
+    entry.actionName.toLowerCase().includes('iniciativa')
+  );
+}
+
+/**
+ * Pure filter for combat logs based on category:
+ * - 'damage': attacks, damage instances
+ * - 'rolls': physical & digital dice rolls
+ * - 'chat': player and DM text chat messages
+ * - 'heal': healing & temp HP
+ * - 'all': all logs
+ */
+export function filterCombatLogs(
+  logs: CombatLogEntry[],
+  filter: CombatLogFilterType
+): CombatLogEntry[] {
+  if (filter === 'damage') return logs.filter((e) => e.type === 'damage');
+  if (filter === 'rolls') return logs.filter(isCombatLogDiceRoll);
+  if (filter === 'chat') return logs.filter((e) => e.type === 'chat');
+  if (filter === 'heal') return logs.filter((e) => e.type === 'heal');
+  return logs;
+}
+

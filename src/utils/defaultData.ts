@@ -1,4 +1,5 @@
 import { Combatant, EncounterState } from '../types/combat.ts';
+import { DEFAULT_DM_NOTES_TEMPLATE } from './dmNotesLogic.ts';
 
 export const PRESET_AVATARS = {
   paladin: `data:image/svg+xml;utf8,${encodeURIComponent(`
@@ -200,6 +201,10 @@ export const INITIAL_COMBATANTS: Combatant[] = [
       },
     ],
     statusEffects: ['bendicion'],
+    resources: [
+      { id: 'res-c1', name: 'Espacios de Hechizo (Niv. 1)', current: 4, max: 4, category: 'spell', color: '#38bdf8' },
+      { id: 'res-c2', name: 'Imposición de Manos', current: 35, max: 35, category: 'class', color: '#facc15' },
+    ],
     notes: 'Defensor principal del grupo. Alta resistencia.',
     gridPosition: { col: 10, row: 3 },
   },
@@ -244,6 +249,11 @@ export const INITIAL_COMBATANTS: Combatant[] = [
       },
     ],
     statusEffects: [],
+    resources: [
+      { id: 'res-r1', name: 'Espacios Hechizo Niv. 1', current: 4, max: 4, category: 'spell', color: '#38bdf8' },
+      { id: 'res-r2', name: 'Espacios Hechizo Niv. 2', current: 3, max: 3, category: 'spell', color: '#818cf8' },
+      { id: 'res-r3', name: 'Carcaj de Flechas', current: 20, max: 20, category: 'item', color: '#4ade80' },
+    ],
     notes: 'Sanadora principal. Mantiene al grupo con vida en los momentos críticos.',
     gridPosition: { col: 12, row: 2 },
   },
@@ -288,6 +298,11 @@ export const INITIAL_COMBATANTS: Combatant[] = [
       },
     ],
     statusEffects: [],
+    resources: [
+      { id: 'res-v1', name: 'Espacios Hechizo Niv. 1', current: 4, max: 4, category: 'spell', color: '#38bdf8' },
+      { id: 'res-v2', name: 'Espacios Hechizo Niv. 2', current: 3, max: 3, category: 'spell', color: '#818cf8' },
+      { id: 'res-v3', name: 'Espacios Hechizo Niv. 3', current: 2, max: 2, category: 'spell', color: '#c084fc' },
+    ],
     notes: 'Especialista en daño masivo a distancia.',
     gridPosition: { col: 12, row: 5 },
   },
@@ -323,6 +338,9 @@ export const INITIAL_COMBATANTS: Combatant[] = [
     ],
     statusEffects: [],
     damageResistances: ['cortante', 'contundente'],
+    resources: [
+      { id: 'res-b1', name: 'Acciones Legendarias', current: 3, max: 3, category: 'class', color: '#f97316' },
+    ],
     notes: 'Jefe del encuentro. Piel titánica: ¡Resiste daño cortante y contundente (recibe solo la mitad de daño)! Enfurece bajo el 50% HP.',
     gridPosition: { col: 2, row: 3 },
   },
@@ -378,5 +396,6 @@ export const INITIAL_ENCOUNTER: EncounterState = {
     },
   ],
   victoryAchieved: false,
+  dmNotes: DEFAULT_DM_NOTES_TEMPLATE,
   lastUpdated: Date.now(),
 };

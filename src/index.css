@@ -1,14 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --obsidian-bg: #0b0c10;
-  --obsidian-surface: #111319;
-  --obsidian-surface-elevated: #161822;
-  --obsidian-surface-card: #1b1e2a;
-  --obsidian-border: #262a38;
-  --obsidian-border-subtle: rgba(255, 255, 255, 0.07);
-  --obsidian-purple: #8b5cf6;
-  --obsidian-purple-glow: rgba(139, 92, 246, 0.25);
+  --obsidian-bg: #0d0e12;
+  --obsidian-surface: #14161d;
+  --obsidian-surface-elevated: #1a1c24;
+  --obsidian-surface-card: #171920;
+  --obsidian-border: #242732;
+  --obsidian-border-subtle: #1c1e28;
+  --matte-gold: #e5a93c;
+  --matte-gold-hover: #d4972f;
+  --matte-blue: #38bdf8;
+  --matte-coral: #f87171;
+  --matte-emerald: #10b981;
 }
 
 body {
@@ -18,20 +21,20 @@ body {
   overflow-x: hidden;
 }
 
-/* Obsidian Sleek Scrollbar */
+/* Matte Sleek Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0e1017;
+  background: #0d0e12;
 }
 ::-webkit-scrollbar-thumb {
-  background: #252836;
+  background: #242732;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #7c3aed;
+  background: #3b3f4f;
 }
 
 /* JRPG Combat Visual Animations for Token Attacks */

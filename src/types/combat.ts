@@ -181,6 +181,32 @@ export interface CombatAction {
   };
 }
 
+export interface CombatantResource {
+  id: string;
+  name: string;
+  current: number;
+  max: number;
+  color?: string;
+  category?: 'spell' | 'class' | 'item' | 'other';
+}
+
+export interface DeathSaves {
+  successes: number; // 0 to 3
+  failures: number; // 0 to 3
+  isStable?: boolean;
+}
+
+export interface SavedEncounter {
+  id: string;
+  title: string;
+  description?: string;
+  environment: BattleEnvironment;
+  combatants: Combatant[];
+  turnOrder?: string[];
+  activeGlobalEffects?: GlobalEffectId[];
+  createdAt: number;
+}
+
 export interface Combatant {
   id: string;
   name: string;
@@ -199,6 +225,8 @@ export interface Combatant {
   damageResistances?: DamageType[]; // Resistencias a tipos de daño (mitad de daño)
   isDefending?: boolean;
   isConcentrating?: boolean; // Concentración activa en un hechizo (D&D 5e)
+  resources?: CombatantResource[]; // Recursos gastables/recargables (espacios de conjuro, ki, flechas, etc.)
+  deathSaves?: DeathSaves; // Salvaciones contra la muerte D&D 5e (a 0 HP)
   notes?: string;
   gridPosition?: { col: number; row: number };
 }
@@ -221,7 +249,7 @@ export interface CombatLogEntry {
   targetId?: string;
   targetName: string;
   actionName: string;
-  type: 'damage' | 'heal' | 'status' | 'system';
+  type: 'damage' | 'heal' | 'status' | 'system' | 'roll' | 'chat';
   damageType?: DamageType;
   amount: number;
   playerAmount?: number; // Daño completo mostrado a los jugadores para no revelar resistencias
@@ -298,6 +326,7 @@ export interface EncounterState {
   autoProcessEnemyTurns?: boolean;
   log: CombatLogEntry[];
   victoryAchieved?: boolean;
+  dmNotes?: string; // Notas de texto enriquecido del DM sincronizadas con la partida
   lastUpdated: number;
 }
 

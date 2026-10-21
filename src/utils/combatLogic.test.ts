@@ -13,9 +13,20 @@ import {
   rollInitiativeForAll,
   resetEncounterToFull,
   getSafeHpValues,
+  calculateGridDistance,
+  getPotentialTargets,
+  sortCombatantsByInitiative,
+  adjustCombatantResource,
+  resetCombatantResources,
+  recordDeathSaveRoll,
+  setManualDeathSaves,
+  resetDeathSaves,
+  filterCombatLogs,
+  isCombatLogDiceRoll,
 } from './combatLogic.ts';
 import { sanitizeForFirestore } from './sanitize.ts';
-import type { Combatant, EncounterState } from '../types/combat.ts';
+import { playAttackSoundByDamageType } from './soundEffects.ts';
+import type { Combatant, EncounterState, CombatLogEntry } from '../types/combat.ts';
 
 const mockPlayer: Combatant = {
   id: 'player-1',
@@ -377,5 +388,392 @@ test('sanitizeForFirestore recursively strips undefined fields and preserves val
   const str = JSON.stringify(sanitized);
   assert.ok(!str.includes('undefined'));
 });
+
+test('playAttackSoundByDamageType safely accepts all damage types without error in non-browser env', () => {
+  const allTypes = [
+    'fuego',
+    'frio',
+    'rayo',
+    'trueno',
+    'contundente',
+    'cortante',
+    'perforante',
+    'acido',
+    'veneno',
+    'necrotico',
+    'radiante',
+    'psiquico',
+    'fuerza',
+    'magical',
+    'physical',
+  ] as const;
+
+  // In Node environment, window/AudioContext is absent, so functions should return safely without throwing
+  assert.doesNotThrow(() => {
+    allTypes.forEach((dt) => {
+      playAttackSoundByDamageType(dt);
+      playAttackSoundByDamageType(dt, true); // test with crit
+    });
+  });
+});
+
+test('calculateGridDistance correctly calculates Chebyshev squares, feet and Euclidean distance', () => {
+  const c1 = { gridPosition: { col: 2, row: 3 } };
+  const c2 = { gridPosition: { col: 6, row: 3 } }; // 4 squares straight
+  const distStraight = calculateGridDistance(c1, c2);
+  assert.equal(distStraight.dx, 4);
+  assert.equal(distStraight.dy, 0);
+  assert.equal(distStraight.squares, 4);
+  assert.equal(distStraight.feet, 20);
+  assert.equal(distStraight.exactFeet, 20);
+
+  // Diagonal 3 across, 4 down
+  const c3 = { gridPosition: { col: 5, row: 7 } }; // dx=3, dy=4
+  const distDiag = calculateGridDistance(c1, c3);
+  assert.equal(distDiag.dx, 3);
+  assert.equal(distDiag.dy, 4);
+  assert.equal(distDiag.squares, 4); // Chebyshev is 4
+  assert.equal(distDiag.feet, 20);
+  assert.equal(distDiag.exactDistance, 5); // 3-4-5 triangle
+  assert.equal(distDiag.exactFeet, 25);
+});
+
+test('getPotentialTargets separates hostile and friendly, sorts by proximity and selects nearest enemy', () => {
+  const actor: Combatant = {
+    id: 'hero-1',
+    name: 'Cecil',
+    type: 'player',
+    avatar: '',
+    currentHp: 80,
+    maxHp: 80,
+    jobClass: 'Paladín',
+    actions: [],
+    statusEffects: [],
+    gridPosition: { col: 10, row: 3 },
+  };
+
+  const ally: Combatant = {
+    id: 'hero-2',
+    name: 'Rosa',
+    type: 'player',
+    avatar: '',
+    currentHp: 50,
+    maxHp: 50,
+    jobClass: 'Clériga',
+    actions: [],
+    statusEffects: [],
+    gridPosition: { col: 10, row: 4 }, // 1 square away
+  };
+
+  const closeEnemy: Combatant = {
+    id: 'enemy-goblin',
+    name: 'Goblin',
+    type: 'enemy',
+    avatar: '',
+    currentHp: 20,
+    maxHp: 20,
+    jobClass: 'Monstruo',
+    actions: [],
+    statusEffects: [],
+    gridPosition: { col: 7, row: 3 }, // dx=3, dy=0 (15 ft)
+  };
+
+  const farEnemy: Combatant = {
+    id: 'enemy-behemoth',
+    name: 'Behemoth',
+    type: 'enemy',
+    avatar: '',
+    currentHp: 160,
+    maxHp: 160,
+    jobClass: 'Monstruo Jefe',
+    actions: [],
+    statusEffects: [],
+    gridPosition: { col: 2, row: 3 }, // dx=8, dy=0 (40 ft)
+  };
+
+  const deadEnemy: Combatant = {
+    id: 'enemy-dead',
+    name: 'Esqueleto Caído',
+    type: 'enemy',
+    avatar: '',
+    currentHp: 0,
+    maxHp: 30,
+    jobClass: 'Monstruo',
+    actions: [],
+    statusEffects: [],
+    gridPosition: { col: 9, row: 3 }, // closest but dead
+  };
+
+  const result = getPotentialTargets(actor, [actor, ally, closeEnemy, farEnemy, deadEnemy]);
+
+  // Dead enemies should not be included
+  assert.equal(result.hostileTargets.length, 2);
+  assert.equal(result.friendlyTargets.length, 1);
+
+  // Friendly target is Rosa
+  assert.equal(result.friendlyTargets[0].combatant.name, 'Rosa');
+  assert.equal(result.friendlyTargets[0].distance.squares, 1);
+
+  // Nearest enemy should be Goblin (15 ft)
+  assert.ok(result.nearestEnemy);
+  assert.equal(result.nearestEnemy.combatant.name, 'Goblin');
+  assert.equal(result.nearestEnemy.distance.squares, 3);
+  assert.equal(result.nearestEnemy.distance.feet, 15);
+
+  // Far enemy is second
+  assert.equal(result.hostileTargets[1].combatant.name, 'Behemoth');
+  assert.equal(result.hostileTargets[1].distance.feet, 40);
+});
+
+test('sortCombatantsByInitiative sorts combatant IDs descending by initiative with tie-breaking', () => {
+  const combatants: Combatant[] = [
+    {
+      id: 'c1',
+      name: 'Cecil',
+      type: 'player',
+      avatar: '',
+      currentHp: 80,
+      maxHp: 80,
+      jobClass: 'Paladín',
+      actions: [],
+      statusEffects: [],
+      initiative: 14,
+    },
+    {
+      id: 'c2',
+      name: 'Goblin',
+      type: 'enemy',
+      avatar: '',
+      currentHp: 20,
+      maxHp: 20,
+      jobClass: 'Monstruo',
+      actions: [],
+      statusEffects: [],
+      initiative: 22,
+    },
+    {
+      id: 'c3',
+      name: 'Rosa',
+      type: 'player',
+      avatar: '',
+      currentHp: 50,
+      maxHp: 50,
+      jobClass: 'Clériga',
+      actions: [],
+      statusEffects: [],
+      initiative: 18,
+    },
+    {
+      id: 'c4',
+      name: 'Behemoth',
+      type: 'enemy',
+      avatar: '',
+      currentHp: 160,
+      maxHp: 160,
+      jobClass: 'Jefe',
+      actions: [],
+      statusEffects: [],
+      initiative: 14, // tied with Cecil
+    },
+  ];
+
+  // 1. Sort using combatants' existing initiative:
+  // Expected: c2 (22) -> c3 (18) -> c1 (14, player beats enemy on tie) -> c4 (14)
+  const sorted = sortCombatantsByInitiative(combatants);
+  assert.deepEqual(sorted, ['c2', 'c3', 'c1', 'c4']);
+
+  // 2. Sort using an overridden initiatives map:
+  const customInits: Record<string, number> = {
+    c1: 25,
+    c2: 10,
+    c3: 5,
+    c4: 30,
+  };
+  const sortedCustom = sortCombatantsByInitiative(combatants, customInits);
+  assert.deepEqual(sortedCustom, ['c4', 'c1', 'c2', 'c3']);
+});
+
+test('adjustCombatantResource clamps values between 0 and max, and resetCombatantResources restores to max', () => {
+  const combatant: Combatant = {
+    id: 'c1',
+    name: 'Vivi',
+    type: 'player',
+    avatar: '',
+    currentHp: 40,
+    maxHp: 40,
+    jobClass: 'Mago',
+    actions: [],
+    statusEffects: [],
+    resources: [
+      { id: 'r1', name: 'Espacios Nv. 1', current: 4, max: 4, category: 'spell' },
+      { id: 'r2', name: 'Puntos de Hechicería', current: 5, max: 5, category: 'class' },
+    ],
+  };
+
+  // Spend 2 spell slots
+  const spent = adjustCombatantResource(combatant, 'r1', -2);
+  assert.equal(spent.resources?.[0].current, 2);
+
+  // Try to spend more than available (clamp to 0)
+  const empty = adjustCombatantResource(spent, 'r1', -5);
+  assert.equal(empty.resources?.[0].current, 0);
+
+  // Try to gain more than max (clamp to max 4)
+  const over = adjustCombatantResource(empty, 'r1', 10);
+  assert.equal(over.resources?.[0].current, 4);
+
+  // Partially spend both and then reset
+  let modified = adjustCombatantResource(combatant, 'r1', -3); // 1 / 4
+  modified = adjustCombatantResource(modified, 'r2', -4); // 1 / 5
+  assert.equal(modified.resources?.[0].current, 1);
+  assert.equal(modified.resources?.[1].current, 1);
+
+  const restored = resetCombatantResources(modified);
+  assert.equal(restored.resources?.[0].current, 4);
+  assert.equal(restored.resources?.[1].current, 5);
+});
+
+test('recordDeathSaveRoll accurately implements D&D 5e death saving throw rules', () => {
+  const dyingPlayer: Combatant = {
+    id: 'hero-1',
+    name: 'Cecil',
+    type: 'player',
+    avatar: '',
+    currentHp: 0,
+    maxHp: 50,
+    jobClass: 'Paladín',
+    actions: [],
+    statusEffects: ['inconsciente'],
+    deathSaves: { successes: 0, failures: 0, isStable: false },
+  };
+
+  // Roll >= 10 adds 1 success
+  const roll1 = recordDeathSaveRoll(dyingPlayer, 14);
+  assert.equal(roll1.result, 'success');
+  assert.equal(roll1.updated.deathSaves?.successes, 1);
+  assert.equal(roll1.updated.deathSaves?.failures, 0);
+
+  // Roll < 10 adds 1 failure
+  const roll2 = recordDeathSaveRoll(roll1.updated, 7);
+  assert.equal(roll2.result, 'failure');
+  assert.equal(roll2.updated.deathSaves?.successes, 1);
+  assert.equal(roll2.updated.deathSaves?.failures, 1);
+
+  // Roll Natural 1 adds 2 failures
+  const rollNat1 = recordDeathSaveRoll(roll2.updated, 1);
+  assert.equal(rollNat1.result, 'dead'); // 1 + 2 = 3 failures -> Dead
+  assert.equal(rollNat1.updated.deathSaves?.failures, 3);
+
+  // Roll Natural 20 restores 1 HP and wakes up
+  const revived = recordDeathSaveRoll(dyingPlayer, 20);
+  assert.equal(revived.result, 'nat20_revived');
+  assert.equal(revived.updated.currentHp, 1);
+  assert.equal(revived.updated.deathSaves?.successes, 0);
+  assert.equal(revived.updated.deathSaves?.failures, 0);
+  assert.ok(!revived.updated.statusEffects.includes('inconsciente'));
+
+  // 3 Successes stabilizes
+  let st = dyingPlayer;
+  st = recordDeathSaveRoll(st, 12).updated; // 1
+  st = recordDeathSaveRoll(st, 15).updated; // 2
+  const finalRoll = recordDeathSaveRoll(st, 18); // 3
+  assert.equal(finalRoll.result, 'stabilized');
+  assert.equal(finalRoll.updated.deathSaves?.isStable, true);
+
+  // Manual death saves overrides
+  const manual = setManualDeathSaves(dyingPlayer, 2, 1);
+  assert.equal(manual.deathSaves?.successes, 2);
+  assert.equal(manual.deathSaves?.failures, 1);
+
+  // Reset death saves
+  const clean = resetDeathSaves(manual);
+  assert.equal(clean.deathSaves?.successes, 0);
+  assert.equal(clean.deathSaves?.failures, 0);
+});
+
+test('filterCombatLogs filters by damage, rolls, chat, heal and all', () => {
+  const sampleLogs: CombatLogEntry[] = [
+    {
+      id: 'log-1',
+      timestamp: '10:00:00',
+      actorName: 'Cecil',
+      targetName: 'Behemoth',
+      actionName: 'Espada Reluciente',
+      type: 'damage',
+      amount: 15,
+    },
+    {
+      id: 'log-2',
+      timestamp: '10:01:00',
+      actorName: 'Cecil',
+      targetName: 'Mesa',
+      actionName: 'Tirada de Dados',
+      type: 'roll',
+      amount: 0,
+      notes: 'd20 ➔ [18] = **18**',
+    },
+    {
+      id: 'log-3',
+      timestamp: '10:02:00',
+      actorName: 'Rosa',
+      targetName: 'Cecil',
+      actionName: 'Curar Heridas',
+      type: 'heal',
+      amount: 12,
+    },
+    {
+      id: 'log-4',
+      timestamp: '10:03:00',
+      actorName: 'Vivi',
+      targetName: 'Mesa',
+      actionName: 'Mensaje',
+      type: 'chat',
+      amount: 0,
+      notes: '¡Preparo Bola de Fuego!',
+    },
+    {
+      id: 'log-5',
+      timestamp: '10:04:00',
+      actorName: 'DM',
+      targetName: 'Mesa',
+      actionName: 'Tirada de Ataque',
+      type: 'roll',
+      amount: 0,
+      notes: 'd20 ➔ [14] = **14**',
+    },
+  ];
+
+  // Test 'all'
+  assert.equal(filterCombatLogs(sampleLogs, 'all').length, 5);
+
+  // Test 'damage'
+  const damageLogs = filterCombatLogs(sampleLogs, 'damage');
+  assert.equal(damageLogs.length, 1);
+  assert.equal(damageLogs[0].id, 'log-1');
+
+  // Test 'rolls'
+  const rollLogs = filterCombatLogs(sampleLogs, 'rolls');
+  assert.equal(rollLogs.length, 2);
+  assert.equal(rollLogs[0].id, 'log-2');
+  assert.equal(rollLogs[1].id, 'log-5');
+
+  // Test 'chat'
+  const chatLogs = filterCombatLogs(sampleLogs, 'chat');
+  assert.equal(chatLogs.length, 1);
+  assert.equal(chatLogs[0].id, 'log-4');
+
+  // Test 'heal'
+  const healLogs = filterCombatLogs(sampleLogs, 'heal');
+  assert.equal(healLogs.length, 1);
+  assert.equal(healLogs[0].id, 'log-3');
+
+  // Test isCombatLogDiceRoll
+  assert.equal(isCombatLogDiceRoll(sampleLogs[1]), true);
+  assert.equal(isCombatLogDiceRoll(sampleLogs[4]), true);
+  assert.equal(isCombatLogDiceRoll(sampleLogs[0]), false);
+});
+
+
+
 
 

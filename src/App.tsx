@@ -48,6 +48,7 @@ import {
 import { INITIAL_COMBATANTS } from './utils/defaultData.ts';
 import {
   playSlashSound,
+  playAttackSoundByDamageType,
   playHealSound,
   playVictoryFanfare,
   playMenuBlip,
@@ -68,8 +69,13 @@ import { RoomLobbyModal } from './components/RoomLobbyModal.tsx';
 import { PlayerTokenSelectionModal } from './components/PlayerTokenSelectionModal.tsx';
 import { InitiativeRollModal } from './components/InitiativeRollModal.tsx';
 import { GlobalEffectsModal } from './components/GlobalEffectsModal.tsx';
+import { QuickDiceRoller } from './components/QuickDiceRoller.tsx';
+import { QuickDiceBar } from './components/QuickDiceBar.tsx';
+import { EncounterManagerModal } from './components/EncounterManagerModal.tsx';
+import { DMNotesDrawer } from './components/DMNotesDrawer.tsx';
+import { BattleChatSidebar } from './components/BattleChatSidebar.tsx';
 
-import { Trophy, Skull, RotateCcw, Check, Radio } from 'lucide-react';
+import { Trophy, Skull, RotateCcw, Check, Radio, BookOpen } from 'lucide-react';
 
 export default function App() {
   const [encounter, setEncounter] = useState<EncounterState>(loadEncounterState);
@@ -85,7 +91,12 @@ export default function App() {
   const [roomData, setRoomData] = useState<RoomData | null>(null);
   const [playerId] = useState<string>(getOrCreatePlayerSessionId);
   const [playerName, setPlayerName] = useState<string>(getStoredPlayerName);
-  const [isRoomLobbyOpen, setIsRoomLobbyOpen] = useState<boolean>(() => !getStoredRoomCode());
+  const [isRoomLobbyOpen, setIsRoomLobbyOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('autostart=1')) {
+      return false;
+    }
+    return !getStoredRoomCode();
+  });
   const [isTokenSelectOpen, setIsTokenSelectOpen] = useState<boolean>(false);
   const [bannerNotice, setBannerNotice] = useState<string | null>(null);
 
@@ -103,6 +114,48 @@ export default function App() {
   const [initiativeModalResults, setInitiativeModalResults] = useState<InitiativeRollResult[]>([]);
   const [isInitiativeModalOpen, setIsInitiativeModalOpen] = useState<boolean>(false);
   const [isGlobalEffectsOpen, setIsGlobalEffectsOpen] = useState<boolean>(false);
+  const [isDiceRollerOpen, setIsDiceRollerOpen] = useState<boolean>(false);
+  const [isEncounterManagerOpen, setIsEncounterManagerOpen] = useState<boolean>(false);
+  const [isDMNotesOpen, setIsDMNotesOpen] = useState<boolean>(false);
+  const [isDMNotesPinned, setIsDMNotesPinned] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('jrpg_dm_notes_pinned') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [isBattleChatOpen, setIsBattleChatOpen] = useState<boolean>(false);
+  const [isBattleChatPinned, setIsBattleChatPinned] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('jrpg_battle_chat_pinned') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleDMNotesPin = () => {
+    setIsDMNotesPinned((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('jrpg_dm_notes_pinned', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const handleToggleBattleChatPin = () => {
+    setIsBattleChatPinned((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('jrpg_battle_chat_pinned', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
 
   // Victory fanfare ref guard
   const victoryCelebratedRef = useRef(false);
@@ -125,6 +178,43 @@ export default function App() {
         console.error('Failed to sync encounter to Firestore room:', err);
       });
     }
+  };
+
+  // Broadcast dice rolls to battle log
+  const handleBroadcastDiceRoll = (rollText: string) => {
+    const author = currentRole === 'dm' ? 'Dungeon Master' : (activePlayer?.name || playerName || 'Jugador');
+    const log = createCombatLog(author, 'Mesa', 'Tirada de Dados', 'roll', 0, false, rollText);
+    persistEncounter({
+      ...encounter,
+      log: [log, ...encounter.log],
+    });
+  };
+
+  // Broadcast chat message to battle log
+  const handleSendChatMessage = (text: string) => {
+    const author = currentRole === 'dm' ? 'Dungeon Master' : (activePlayer?.name || playerName || 'Jugador');
+    const log = createCombatLog(author, 'Mesa', text, 'chat', 0, false, text);
+    persistEncounter({
+      ...encounter,
+      log: [log, ...encounter.log],
+    });
+  };
+
+  // Load custom or preset encounter
+  const handleLoadEncounter = (newEncounter: EncounterState) => {
+    persistEncounter(newEncounter);
+    setIsEncounterManagerOpen(false);
+    setBannerNotice(`Encuentro "${newEncounter.title}" cargado con éxito`);
+    setTimeout(() => setBannerNotice(null), 4000);
+  };
+
+  // Save DM rich text notes synchronized in real-time with encounter state
+  const handleSaveDMNotes = (newNotes: string) => {
+    persistEncounter({
+      ...encounter,
+      dmNotes: newNotes,
+      lastUpdated: Date.now(),
+    });
   };
 
   // Reconnect to active room if stored
@@ -191,6 +281,11 @@ export default function App() {
       },
       (floatEffect) => {
         setFloatingNumbers((prev) => [...prev, floatEffect]);
+        if (floatEffect.type === 'damage') {
+          playAttackSoundByDamageType(floatEffect.damageType);
+        } else if (floatEffect.type === 'heal') {
+          playHealSound();
+        }
         setTimeout(() => {
           setFloatingNumbers((prev) => prev.filter((f) => f.id !== floatEffect.id));
         }, 1600);
@@ -409,7 +504,7 @@ export default function App() {
         : activeTargets.some((at) => at.id === c.id)
     );
 
-    playSlashSound();
+    playAttackSoundByDamageType(damageType);
     const newLogs: CombatLogEntry[] = [];
     let nextCombatants = [...encounter.combatants];
 
@@ -657,6 +752,13 @@ export default function App() {
           if (activePlayer) handleOpenCard(activePlayer);
         }}
         onOpenGlobalEffects={() => setIsGlobalEffectsOpen(true)}
+        onOpenDiceRoller={() => setIsDiceRollerOpen(true)}
+        onOpenEncounterManager={() => setIsEncounterManagerOpen(true)}
+        onOpenDMNotes={() => setIsDMNotesOpen((prev) => !prev)}
+        isDMNotesOpen={isDMNotesOpen}
+        onToggleChat={() => setIsBattleChatOpen((prev) => !prev)}
+        isChatOpen={isBattleChatOpen}
+        chatCount={encounter.log.length}
       />
 
       {/* Real-time Banner Notice */}
@@ -668,7 +770,15 @@ export default function App() {
       )}
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-4 pb-28 overflow-x-hidden">
+      <main
+        className={`flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-4 pb-28 overflow-x-hidden transition-all duration-300 ${
+          isDMNotesOpen && isDMNotesPinned
+            ? 'xl:mr-[540px]'
+            : isBattleChatOpen && isBattleChatPinned
+            ? 'xl:mr-[490px]'
+            : ''
+        }`}
+      >
         {/* Victory or Party Wipe Banner */}
         {isWon && (
           <div className="bg-[#151208]/95 border border-amber-500/40 p-4 rounded-2xl flex items-center justify-between gap-3 text-amber-200 shadow-xl shadow-amber-950/40 ring-1 ring-amber-500/20 animate-fade-in">
@@ -727,7 +837,14 @@ export default function App() {
           onOpenGlobalEffects={() => setIsGlobalEffectsOpen(true)}
         />
 
-        {/* Split Screen Mode: Render both DM Screen and Player Panel in parallel */}
+        {/* Quick Dice Bar directly underneath Turn Order Ribbon */}
+        <QuickDiceBar
+          onOpenDiceRoller={() => setIsDiceRollerOpen(true)}
+          onBroadcastRoll={handleBroadcastDiceRoll}
+          senderName={currentRole === 'dm' ? 'Dungeon Master' : (activePlayer?.name || playerName)}
+        />
+
+        {/* Main Combat Stage: Split Screen or Single Role View */}
         {splitView ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="flex flex-col gap-4">
@@ -764,6 +881,7 @@ export default function App() {
                 onOpenOrderModal={() => setIsOrderModalOpen(true)}
                 onOpenCounterModal={(actor, target) => setCounterModalData({ actor, target })}
                 onOpenStatusPicker={(c) => setStatusPickerTarget(c)}
+                onOpenDMNotes={() => setIsDMNotesOpen(true)}
               />
             </div>
 
@@ -843,6 +961,7 @@ export default function App() {
                 onOpenOrderModal={() => setIsOrderModalOpen(true)}
                 onOpenCounterModal={(actor, target) => setCounterModalData({ actor, target })}
                 onOpenStatusPicker={(c) => setStatusPickerTarget(c)}
+                onOpenDMNotes={() => setIsDMNotesOpen(true)}
               />
             ) : (
               activePlayer && (
@@ -862,13 +981,6 @@ export default function App() {
             )}
           </div>
         )}
-
-        {/* Live Combat Log Drawer at bottom */}
-        <CombatLogDrawer
-          log={encounter.log}
-          onClearLog={handleClearLog}
-          isDMView={currentRole === 'dm'}
-        />
       </main>
 
       {/* Room Lobby Modal (DM room creation, player room joining) */}
@@ -982,6 +1094,72 @@ export default function App() {
           persistEncounter(updated);
         }}
         onClose={() => setIsGlobalEffectsOpen(false)}
+      />
+
+      {/* Bandeja de Dados Rápida Universal */}
+      <QuickDiceRoller
+        isOpen={isDiceRollerOpen}
+        onClose={() => setIsDiceRollerOpen(false)}
+        onBroadcastRoll={handleBroadcastDiceRoll}
+        senderName={currentRole === 'dm' ? 'Dungeon Master' : (activePlayer?.name || playerName)}
+      />
+
+      {/* Gestor de Múltiples Encuentros (Plantillas, Guardar, Exportar e Importar JSON) */}
+      <EncounterManagerModal
+        isOpen={isEncounterManagerOpen}
+        onClose={() => setIsEncounterManagerOpen(false)}
+        currentEncounter={encounter}
+        onLoadEncounter={handleLoadEncounter}
+      />
+
+      {/* Floating DM Notes Tab on right screen edge */}
+      {currentRole === 'dm' && !isDMNotesOpen && (
+        <button
+          type="button"
+          onClick={() => {
+            playMenuBlip();
+            setIsDMNotesOpen(true);
+          }}
+          className="fixed right-0 top-[38%] -translate-y-1/2 z-30 bg-gradient-to-l from-amber-950/90 via-[#181926]/95 to-[#12131b]/95 hover:from-amber-900/90 text-amber-300 border-l border-t border-b border-amber-500/50 py-3 px-2 rounded-l-xl shadow-2xl backdrop-blur-md flex flex-col items-center gap-2 group transition-all cursor-pointer hover:pl-3"
+          title="Abrir cuaderno de Notas del DM (Hilos argumentales y secretos)"
+          aria-label="Abrir Notas del DM"
+        >
+          <BookOpen className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
+          <span className="[writing-mode:vertical-rl] text-[10px] font-mono font-bold tracking-wider uppercase text-amber-200/90">
+            Notas DM
+          </span>
+          {encounter.dmNotes && encounter.dmNotes.trim().length > 0 && (
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+          )}
+        </button>
+      )}
+
+      {/* DM Notes Lateral Drawer */}
+      {currentRole === 'dm' && (
+        <DMNotesDrawer
+          isOpen={isDMNotesOpen}
+          onClose={() => setIsDMNotesOpen(false)}
+          encounterTitle={encounter.title}
+          notes={encounter.dmNotes || ''}
+          onSaveNotes={handleSaveDMNotes}
+          isPinned={isDMNotesPinned}
+          onTogglePin={handleToggleDMNotesPin}
+        />
+      )}
+
+      {/* Battle Chat & Damage Log Lateral Drawer (with right edge sticker when closed) */}
+      <BattleChatSidebar
+        log={encounter.log}
+        onClearLog={handleClearLog}
+        onSendMessage={handleSendChatMessage}
+        onBroadcastRoll={handleBroadcastDiceRoll}
+        isDMView={currentRole === 'dm'}
+        senderName={currentRole === 'dm' ? 'Dungeon Master' : (activePlayer?.name || playerName || 'Jugador')}
+        isOpen={isBattleChatOpen}
+        onClose={() => setIsBattleChatOpen(false)}
+        onToggleOpen={() => setIsBattleChatOpen((prev) => !prev)}
+        isPinned={isBattleChatPinned}
+        onTogglePin={handleToggleBattleChatPin}
       />
     </div>
   );

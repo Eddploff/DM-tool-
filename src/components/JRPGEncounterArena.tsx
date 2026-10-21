@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Combatant,
   BattleEnvironment,
@@ -9,7 +9,16 @@ import {
   AoETemplate,
   TurnPhase,
 } from '../types/combat.ts';
-import { getHealthStatus, getCombatantsInAoE, canCombatantActInTurn, getSafeHpValues } from '../utils/combatLogic.ts';
+import {
+  getHealthStatus,
+  getCombatantsInAoE,
+  canCombatantActInTurn,
+  getSafeHpValues,
+  calculateGridDistance,
+  getPotentialTargets,
+  PotentialTarget,
+  DistanceInfo,
+} from '../utils/combatLogic.ts';
 import { getStatusEffectMeta } from '../utils/statusEffects.ts';
 import { playMenuBlip } from '../utils/soundEffects.ts';
 import { HearthstoneArrow } from './HearthstoneArrow.tsx';
@@ -36,6 +45,7 @@ import {
   ChevronRight,
   Smartphone,
   Dices,
+  Ruler,
 } from 'lucide-react';
 
 interface JRPGEncounterArenaProps {
@@ -111,6 +121,12 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
   const [aoeSizeFeet, setAoeSizeFeet] = useState<AoESizeFeet>(20);
   const [aoeHoverCenter, setAoeHoverCenter] = useState<{ col: number; row: number } | null>(null);
 
+  // Ruler / Cinta Métrica tool state
+  const [isRulerMode, setIsRulerMode] = useState<boolean>(false);
+  const [rulerOrigin, setRulerOrigin] = useState<{ col: number; row: number } | null>(null);
+  const [rulerTarget, setRulerTarget] = useState<{ col: number; row: number } | null>(null);
+  const [rulerPinned, setRulerPinned] = useState<boolean>(false);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const tokenRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -154,6 +170,60 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     cellCombatantMap.set(`${pos.col}-${pos.row}`, c);
   });
 
+  // Selected actor for targeting and actions (priority: targeting source -> unfolded menu -> active turn -> active player)
+  const currentActor: Combatant | undefined = useMemo(() => {
+    if (targetingSourceId) {
+      return combatants.find((c) => c.id === targetingSourceId);
+    }
+    if (unfoldedCombatantId) {
+      return combatants.find((c) => c.id === unfoldedCombatantId);
+    }
+    if (activeTurnCombatantId) {
+      return combatants.find((c) => c.id === activeTurnCombatantId);
+    }
+    if (!isDMView && activePlayerId) {
+      return combatants.find((c) => c.id === activePlayerId);
+    }
+    return combatants.find((c) => c.currentHp > 0) || combatants[0];
+  }, [targetingSourceId, unfoldedCombatantId, activeTurnCombatantId, activePlayerId, isDMView, combatants]);
+
+  // Potential targets calculated for currentActor
+  const { hostileTargets, friendlyTargets, nearestEnemy } = useMemo(() => {
+    if (!currentActor) {
+      return { hostileTargets: [], friendlyTargets: [], nearestEnemy: null };
+    }
+    return getPotentialTargets(currentActor, combatants, (c) =>
+      getPositionFor(c, combatants.indexOf(c))
+    );
+  }, [currentActor, combatants]);
+
+  const nearestEnemyTarget = nearestEnemy?.combatant;
+  const nearestEnemyDistance = nearestEnemy?.distance;
+
+  // Helper to get distance info between any two combatants
+  const getDistanceBetween = (c1: Combatant, c2: Combatant): DistanceInfo => {
+    const pos1 = getPositionFor(c1, combatants.indexOf(c1));
+    const pos2 = getPositionFor(c2, combatants.indexOf(c2));
+    return calculateGridDistance({ gridPosition: pos1 }, { gridPosition: pos2 });
+  };
+
+  // Quick-select Nearest Enemy handler
+  const handleSelectNearestEnemy = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!nearestEnemyTarget) {
+      setTurnNotice('No hay enemigos vivos en el encuentro.');
+      setTimeout(() => setTurnNotice(null), 3000);
+      return;
+    }
+    playMenuBlip();
+    onSelectTarget(nearestEnemyTarget.id);
+    setHoveredTargetId(nearestEnemyTarget.id);
+    setTurnNotice(
+      `🎯 Objetivo fijado: ${nearestEnemyTarget.name} (${nearestEnemyDistance?.feet} ft / ${nearestEnemyDistance?.squares} casillas de ${currentActor?.name})`
+    );
+    setTimeout(() => setTurnNotice(null), 3500);
+  };
+
   // Track mouse pointer when targeting is active
   useEffect(() => {
     if (!targetingSourceId) return;
@@ -181,7 +251,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     };
   }, [targetingSourceId]);
 
-  // Close unfolded options menu or AoE with Escape
+  // Close unfolded options menu, AoE, or Ruler with Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -190,11 +260,17 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
           setIsAoEMode(false);
           setAoeHoverCenter(null);
         }
+        if (isRulerMode) {
+          setIsRulerMode(false);
+          setRulerOrigin(null);
+          setRulerTarget(null);
+          setRulerPinned(false);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [unfoldedCombatantId, isAoEMode]);
+  }, [unfoldedCombatantId, isAoEMode, isRulerMode]);
 
   // Start targeting from a combatant (aiming arrow)
   const startTargeting = (sourceCombatant: Combatant, e?: React.MouseEvent) => {
@@ -229,6 +305,13 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
     e.stopPropagation();
     playMenuBlip();
 
+    // If Ruler mode is active, clicking a token measures to or from that token
+    if (isRulerMode) {
+      const pos = getPositionFor(c, combatants.indexOf(c));
+      handleCellClick(pos.col, pos.row);
+      return;
+    }
+
     // If AoE mode is active, clicking detonates AoE
     if (isAoEMode && aoeHoverCenter) {
       handleAoEDetonate(aoeHoverCenter.col, aoeHoverCenter.row);
@@ -254,6 +337,25 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
 
   // Click on a grid cell
   const handleCellClick = (col: number, row: number) => {
+    // If Ruler mode is active, set origin or lock target
+    if (isRulerMode) {
+      playMenuBlip();
+      if (!rulerOrigin) {
+        setRulerOrigin({ col, row });
+        setRulerTarget({ col, row });
+        setRulerPinned(false);
+      } else if (!rulerPinned) {
+        setRulerTarget({ col, row });
+        setRulerPinned(true);
+      } else {
+        // Reset and start new measurement from this cell
+        setRulerOrigin({ col, row });
+        setRulerTarget({ col, row });
+        setRulerPinned(false);
+      }
+      return;
+    }
+
     // If AoE mode is active, detonate the spell in this cell
     if (isAoEMode) {
       handleAoEDetonate(col, row);
@@ -484,13 +586,72 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
         })
       : [];
 
+  // Ruler Distance and Line Calculation
+  const rulerLineCells = useMemo(() => {
+    if (!isRulerMode || !rulerOrigin || !rulerTarget) return new Map<string, number>();
+    const map = new Map<string, number>();
+    const p0 = rulerOrigin;
+    const p1 = rulerTarget;
+    const dx = Math.abs(p1.col - p0.col);
+    const dy = Math.abs(p1.row - p0.row);
+    const sx = p0.col < p1.col ? 1 : -1;
+    const sy = p0.row < p1.row ? 1 : -1;
+    let err = dx - dy;
+
+    let currCol = p0.col;
+    let currRow = p0.row;
+    let step = 0;
+
+    while (true) {
+      const distSquares = Math.max(Math.abs(currCol - p0.col), Math.abs(currRow - p0.row));
+      map.set(`${currCol}-${currRow}`, distSquares * 5);
+      if (currCol === p1.col && currRow === p1.row) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        currCol += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        currRow += sy;
+      }
+      step++;
+      if (step > 60) break;
+    }
+    return map;
+  }, [isRulerMode, rulerOrigin, rulerTarget]);
+
+  const rulerDistance = useMemo(() => {
+    if (!rulerOrigin || !rulerTarget) return null;
+    const dx = Math.abs(rulerTarget.col - rulerOrigin.col);
+    const dy = Math.abs(rulerTarget.row - rulerOrigin.row);
+    const squares = Math.max(dx, dy);
+    const feet = squares * 5;
+    const exactFeet = Math.round(Math.hypot(dx, dy) * 5 * 10) / 10;
+    return { dx, dy, squares, feet, exactFeet };
+  }, [rulerOrigin, rulerTarget]);
+
+  const rulerOriginCombatant = rulerOrigin
+    ? combatants.find((c, idx) => {
+        const p = getPositionFor(c, idx);
+        return p.col === rulerOrigin.col && p.row === rulerOrigin.row;
+      })
+    : null;
+
+  const rulerTargetCombatant = rulerTarget
+    ? combatants.find((c, idx) => {
+        const p = getPositionFor(c, idx);
+        return p.col === rulerTarget.col && p.row === rulerTarget.row;
+      })
+    : null;
+
   return (
     <div
       ref={containerRef}
       onClick={() => {
         setUnfoldedCombatantId(null);
       }}
-      className={`relative w-full rounded-2xl overflow-hidden border-2 border-indigo-800/60 shadow-2xl transition-all duration-500 ${currentEnv.bgClass} flex flex-col justify-between select-none`}
+      className={`relative w-full rounded-2xl overflow-hidden border border-[#222532] shadow-xl transition-all duration-500 ${currentEnv.bgClass} flex flex-col justify-between select-none`}
     >
       {/* Hearthstone Targeting Arrow overlay */}
       {targetingSourceId && startPoint && (
@@ -506,7 +667,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
 
       {/* Turn Out-of-turn Notification Toast */}
       {turnNotice && (
-        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-amber-950/95 border-2 border-amber-500 text-amber-200 px-4 py-2 rounded-xl text-xs font-bold shadow-2xl animate-bounce flex items-center gap-2">
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-[#1e1710] border border-[#e5a93c] text-[#fbbf24] px-4 py-2 rounded-xl text-xs font-bold shadow-xl flex items-center gap-2">
           <span>⚠️ {turnNotice}</span>
           <button
             onClick={() => setTurnNotice(null)}
@@ -520,14 +681,14 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
       {/* Arena Top Toolbar / Status Bar */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative z-20 px-3 py-2 flex flex-wrap items-center justify-between gap-2 bg-black/55 backdrop-blur-xs border-b border-white/10 text-xs"
+        className="relative z-20 px-3 py-2 flex flex-wrap items-center justify-between gap-2 bg-[#10121a]/90 backdrop-blur-md border-b border-[#222532] text-xs"
       >
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="w-2 h-2 rounded-full bg-[#10b981]" />
           <span className="font-bold tracking-wider uppercase font-mono text-slate-200">
             Mapa VTT de Combate
           </span>
-          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-white/10 text-amber-200 border border-white/15 flex items-center gap-1">
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#1a1d28] text-amber-200 border border-[#2a2f42] flex items-center gap-1">
             <span>{currentEnv.icon}</span>
             <span>{currentEnv.name}</span>
           </span>
@@ -535,10 +696,10 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
           {/* Current Turn Indicator in Toolbar */}
           {currentTurnActor && (
             <span
-              className={`px-2 py-0.5 rounded-full text-[11px] font-black uppercase flex items-center gap-1 shadow border ${
+              className={`px-2 py-0.5 rounded-full text-[11px] font-black uppercase flex items-center gap-1 border ${
                 canInteract
-                  ? 'bg-amber-950 text-amber-300 border-amber-500 animate-pulse'
-                  : 'bg-slate-900 text-slate-400 border-slate-700'
+                  ? 'bg-[#241f14] text-[#e5a93c] border-[#523d1c]'
+                  : 'bg-[#161822] text-slate-400 border-[#262a3a]'
               }`}
             >
               <span>👑 Turno: {currentTurnActor.name.split(' ')[0]}</span>
@@ -638,8 +799,103 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                 ✕ Cancelar
               </button>
             </div>
+          ) : isRulerMode ? (
+            /* 3. REGLA / CINTA MÉTRICA ACTIVE TOOLBAR */
+            <div className="flex items-center gap-1.5 bg-cyan-950/95 border border-cyan-500/80 rounded-xl px-2.5 py-1 shadow-lg text-white animate-fade-in flex-wrap">
+              <span className="font-black text-cyan-300 flex items-center gap-1 text-[11px]">
+                <Ruler className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                <span>CINTA MÉTRICA:</span>
+              </span>
+
+              {rulerOrigin ? (
+                <div className="flex items-center gap-1.5 text-xs font-mono flex-wrap">
+                  <span className="bg-[#0b1320] px-2 py-0.5 rounded text-cyan-200 border border-cyan-800 flex items-center gap-1">
+                    <span className="text-[10px] text-cyan-400">Origen:</span>
+                    <b>{COL_LABELS[rulerOrigin.col]}{rulerOrigin.row + 1}</b>
+                    {rulerOriginCombatant && (
+                      <span className="text-[10px] text-cyan-300">({rulerOriginCombatant.name.split(' ')[0]})</span>
+                    )}
+                  </span>
+
+                  <span className="text-cyan-400 font-bold">➔</span>
+
+                  <span className="bg-[#0b1320] px-2 py-0.5 rounded text-cyan-200 border border-cyan-800 flex items-center gap-1">
+                    <span className="text-[10px] text-cyan-400">Destino:</span>
+                    <b>{rulerTarget ? `${COL_LABELS[rulerTarget.col]}${rulerTarget.row + 1}` : '...'}</b>
+                    {rulerTargetCombatant && (
+                      <span className="text-[10px] text-cyan-300">({rulerTargetCombatant.name.split(' ')[0]})</span>
+                    )}
+                  </span>
+
+                  {rulerDistance && (
+                    <span className="px-2 py-0.5 rounded bg-cyan-500 text-slate-950 font-black text-xs shadow flex items-center gap-1">
+                      <span>📏 {rulerDistance.feet} ft</span>
+                      <span className="text-[10px] font-bold text-slate-800 font-sans">({rulerDistance.squares} casillas)</span>
+                    </span>
+                  )}
+
+                  {rulerDistance && (
+                    <span className="text-[10px] text-cyan-300/80 hidden md:inline">
+                      Euclídea: {rulerDistance.exactFeet} ft
+                    </span>
+                  )}
+
+                  {rulerPinned && (
+                    <span className="text-[10px] bg-cyan-900/80 text-cyan-200 px-1.5 py-0.5 rounded border border-cyan-600/60 font-sans font-bold">
+                      Fijada 📌
+                    </span>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playMenuBlip();
+                      setRulerOrigin(null);
+                      setRulerTarget(null);
+                      setRulerPinned(false);
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-900/60 hover:bg-cyan-800 text-cyan-200 border border-cyan-700 cursor-pointer"
+                  >
+                    Nueva Medición
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs text-cyan-200/90 italic">
+                  Haz clic en una casilla o ficha para fijar el origen
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRulerMode(false);
+                  setRulerOrigin(null);
+                  setRulerTarget(null);
+                  setRulerPinned(false);
+                }}
+                className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 ml-auto cursor-pointer"
+              >
+                ✕ Salir
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
+              {/* Quick-select Nearest Enemy Button */}
+              {nearestEnemyTarget && (
+                <button
+                  type="button"
+                  onClick={handleSelectNearestEnemy}
+                  title={`Fijar como objetivo al enemigo más cercano (${nearestEnemyTarget.name}) a ${currentActor?.name} (${nearestEnemyDistance?.feet} ft)`}
+                  className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#261619] hover:bg-[#341b20] text-[#f87171] border border-[#52232a] flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Crosshair className="w-3.5 h-3.5 text-[#f87171]" />
+                  <span>Enemigo cercano</span>
+                  <span className="text-[9px] font-mono text-[#fca5a5] bg-[#1a0f12] px-1 py-0.2 rounded border border-[#52232a]">
+                    {nearestEnemyDistance?.feet}ft
+                  </span>
+                </button>
+              )}
+
               {/* Botón para activar Daño en Área (AoE) */}
               <button
                 type="button"
@@ -651,23 +907,44 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                     return;
                   }
                   setIsAoEMode(true);
+                  setIsRulerMode(false);
                   setUnfoldedCombatantId(null);
                   setTargetingSourceId(null);
                 }}
                 title="Habilitar plantilla de daño en área (Círculos y Cuadrados 10ft a 30ft estilo D&D)"
-                className="px-2.5 py-1 rounded-lg text-[10px] font-black bg-gradient-to-r from-purple-700 via-indigo-600 to-pink-600 hover:from-purple-600 hover:to-pink-500 text-white border border-purple-400/60 shadow flex items-center gap-1.5 transition-all hover:scale-105 active:scale-95"
+                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#1d1b2e] hover:bg-[#28253f] text-[#c084fc] border border-[#3d3761] flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-spin" />
-                <span>✨ Daño en Área (AoE)</span>
+                <Sparkles className="w-3.5 h-3.5 text-[#c084fc]" />
+                <span>Daño en Área (AoE)</span>
+              </button>
+
+              {/* Botón Herramienta de Medición / Cinta Métrica (Ruler) */}
+              <button
+                type="button"
+                onClick={() => {
+                  playMenuBlip();
+                  setIsRulerMode(true);
+                  setIsAoEMode(false);
+                  setUnfoldedCombatantId(null);
+                  setTargetingSourceId(null);
+                  setRulerOrigin(null);
+                  setRulerTarget(null);
+                  setRulerPinned(false);
+                }}
+                title="Herramienta de Medición / Cinta Métrica para medir distancias en casillas y pies (Regla D&D 5e)"
+                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-[#14222c] hover:bg-[#1a2f3d] text-[#38bdf8] border border-[#23485f] flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Ruler className="w-3.5 h-3.5 text-[#38bdf8]" />
+                <span>Cinta Métrica</span>
               </button>
 
               <button
                 onClick={() => setShowCoordinates(!showCoordinates)}
                 title="Mostrar/ocultar coordenadas A-N y 1-8"
-                className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors flex items-center gap-1 cursor-pointer ${
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors flex items-center gap-1 cursor-pointer ${
                   showCoordinates
-                    ? 'bg-indigo-900/80 text-indigo-200 border-indigo-600'
-                    : 'bg-slate-800/80 text-slate-400 border-slate-700'
+                    ? 'bg-[#1e2333] text-[#93c5fd] border-[#374463]'
+                    : 'bg-[#171922] text-slate-400 border-[#262938]'
                 }`}
               >
                 <Grid className="w-3 h-3" />
@@ -807,6 +1084,26 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                     const isActiveTurn = combatant && combatant.id === activeTurnCombatantId;
                     const isCombatantInAoE = Boolean(combatant && isCellInAoE);
 
+                    // Potential Target Calculations for combatant in this cell
+                    const targetInfo = combatant
+                      ? hostileTargets.find((h) => h.combatant.id === combatant.id)
+                      : null;
+                    const isPotentialTarget = Boolean(targetInfo && combatant && combatant.currentHp > 0);
+                    const isNearestTarget = Boolean(
+                      nearestEnemyTarget && combatant && nearestEnemyTarget.id === combatant.id
+                    );
+                    const isSelectedTarget = Boolean(combatant && selectedTargetId === combatant.id);
+
+                    // Ruler cell states
+                    const isRulerOrigin = Boolean(
+                      isRulerMode && rulerOrigin && rulerOrigin.col === colIndex && rulerOrigin.row === rowIndex
+                    );
+                    const isRulerTarget = Boolean(
+                      isRulerMode && rulerTarget && rulerTarget.col === colIndex && rulerTarget.row === rowIndex
+                    );
+                    const rulerStepDist = rulerLineCells.get(cellKey);
+                    const isCellOnRulerLine = rulerStepDist !== undefined;
+
                     return (
                       <div
                         key={colIndex}
@@ -815,17 +1112,42 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                           if (isAoEMode) {
                             setAoeHoverCenter({ col: colIndex, row: rowIndex });
                           }
+                          if (isRulerMode && rulerOrigin && !rulerPinned) {
+                            setRulerTarget({ col: colIndex, row: rowIndex });
+                          }
                         }}
                         onDragOver={(e) => handleDragOver(colIndex, rowIndex, e)}
                         onDrop={(e) => handleDrop(colIndex, rowIndex, e)}
                         className={`relative w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 border-r border-b transition-colors flex items-center justify-center shrink-0 ${
                           isCellInAoE
                             ? 'bg-purple-600/35 border-purple-400/80 ring-1 ring-purple-400/60'
+                            : isRulerOrigin
+                            ? 'bg-cyan-600/40 border-cyan-400 ring-2 ring-cyan-400 ring-inset shadow-inner'
+                            : isRulerTarget
+                            ? 'bg-cyan-500/35 border-cyan-300 ring-2 ring-cyan-300 ring-inset shadow-inner'
+                            : isCellOnRulerLine
+                            ? 'bg-cyan-500/20 border-cyan-400/50 ring-1 ring-cyan-400/30'
                             : isOver
                             ? 'bg-amber-500/25 ring-2 ring-amber-400 ring-inset border-white/10'
+                            : isSelectedTarget
+                            ? 'bg-cyan-950/35 border-cyan-500/50 ring-1 ring-cyan-400/30'
+                            : isNearestTarget
+                            ? 'bg-rose-950/35 border-rose-500/50 ring-1 ring-rose-500/30'
+                            : isPotentialTarget
+                            ? 'bg-rose-950/20 border-rose-500/25'
                             : `border-white/10 ${currentEnv.gridCellBg}`
                         }`}
                       >
+                        {/* Target Reticle Corner Accents on Cell */}
+                        {isPotentialTarget && !isCellInAoE && !isCellOnRulerLine && (
+                          <div className="absolute inset-0 pointer-events-none z-5">
+                            <div className={`absolute top-0.5 left-0.5 w-1.5 h-1.5 border-t border-l ${isSelectedTarget ? 'border-cyan-400' : isNearestTarget ? 'border-rose-400' : 'border-rose-500/40'}`} />
+                            <div className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 border-t border-r ${isSelectedTarget ? 'border-cyan-400' : isNearestTarget ? 'border-rose-400' : 'border-rose-500/40'}`} />
+                            <div className={`absolute bottom-0.5 left-0.5 w-1.5 h-1.5 border-b border-l ${isSelectedTarget ? 'border-cyan-400' : isNearestTarget ? 'border-rose-400' : 'border-rose-500/40'}`} />
+                            <div className={`absolute bottom-0.5 right-0.5 w-1.5 h-1.5 border-b border-r ${isSelectedTarget ? 'border-cyan-400' : isNearestTarget ? 'border-rose-400' : 'border-rose-500/40'}`} />
+                          </div>
+                        )}
+
                         {/* Subtle coordinate watermark in top-left of cell */}
                         {showCoordinates && !isCellInAoE && (
                           <span className="absolute top-0.5 left-1 text-[8px] sm:text-[9px] font-mono text-white/20 select-none pointer-events-none">
@@ -838,6 +1160,33 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                           <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
                             <span className="text-[10px] font-black font-mono text-amber-300 bg-purple-950/90 px-1 py-0.5 rounded border border-amber-400 shadow animate-pulse">
                               {aoeSizeFeet}ft
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Ruler Origin Badge */}
+                        {isRulerOrigin && (
+                          <div className="absolute top-0.5 right-0.5 z-10 pointer-events-none">
+                            <span className="text-[8px] font-black font-mono text-cyan-200 bg-cyan-950/90 px-1 py-0.2 rounded border border-cyan-400 shadow">
+                              ORIGEN
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Ruler Target Distance Badge */}
+                        {isRulerTarget && !isRulerOrigin && rulerDistance && (
+                          <div className="absolute -bottom-1.5 z-20 pointer-events-none">
+                            <span className="text-[9px] font-black font-mono text-slate-950 bg-cyan-400 px-1.5 py-0.5 rounded-full shadow-lg border border-white animate-bounce">
+                              {rulerDistance.feet}ft
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Ruler Intermediate Step Label on Line */}
+                        {isCellOnRulerLine && !isRulerOrigin && !isRulerTarget && !combatant && (
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 opacity-80">
+                            <span className="text-[8px] font-mono font-bold text-cyan-300 bg-black/60 px-1 rounded border border-cyan-500/40">
+                              {rulerStepDist}ft
                             </span>
                           </div>
                         )}
@@ -921,43 +1270,76 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                               </div>
                             )}
 
+                            {/* Potential Target Distance & Selection Indicator */}
+                            {targetInfo && combatant.currentHp > 0 && (
+                              <div
+                                title={`Distancia a ${currentActor?.name}: ${targetInfo.distance.feet} ft (${targetInfo.distance.squares} casillas)`}
+                                className={`absolute -top-3.5 z-35 px-1.5 py-0.2 rounded-full text-[8px] font-mono font-bold flex items-center gap-0.5 shadow-md pointer-events-none select-none transition-all ${
+                                  isSelectedTarget
+                                    ? 'bg-cyan-500 text-slate-950 border border-cyan-200 ring-2 ring-cyan-400/60 scale-105'
+                                    : isNearestTarget
+                                    ? 'bg-gradient-to-r from-rose-600 to-red-600 text-white border border-rose-300 ring-1 ring-rose-400/60 animate-bounce'
+                                    : 'bg-red-950/90 text-red-200 border border-red-700/70'
+                                }`}
+                              >
+                                <Crosshair className="w-2.5 h-2.5 shrink-0" />
+                                <span>{targetInfo.distance.feet}ft</span>
+                                {isNearestTarget && (
+                                  <span className="text-[7px] text-amber-200 font-sans font-black ml-0.5 uppercase tracking-tighter">
+                                    CERCA
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
                             {/* Circular VTT Token - DEAD CENTER IN CELL */}
                             <div
-                              className={`relative w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-full p-0.5 transition-all duration-200 group-hover:scale-110 active:scale-95 flex items-center justify-center ${
+                              className={`relative w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-full p-0.5 transition-all duration-150 group-hover:scale-105 active:scale-95 flex items-center justify-center ${
                                 floatingNumbers.some((f) => f.targetId === combatant.id && f.type === 'damage')
                                   ? 'animate-token-shake'
                                   : ''
                               } ${
                                 isActiveTurn
-                                  ? 'ring-4 ring-amber-400 shadow-[0_0_24px_rgba(251,191,36,0.95)] animate-pulse'
+                                  ? 'ring-2 ring-[#e5a93c]'
                                   : isCombatantInAoE
-                                  ? 'ring-4 ring-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.9)] animate-pulse'
+                                  ? 'ring-2 ring-[#f87171]'
                                   : hoveredTargetId === combatant.id && targetingSourceId !== combatant.id
-                                  ? 'ring-4 ring-red-500 scale-125 shadow-2xl'
+                                  ? 'ring-2 ring-[#f87171] scale-110'
                                   : unfoldedCombatantId === combatant.id
-                                  ? 'ring-4 ring-amber-400 shadow-2xl scale-105'
-                                  : selectedTargetId === combatant.id
-                                  ? 'ring-3 ring-cyan-400 shadow-lg'
+                                  ? 'ring-2 ring-[#e5a93c] scale-105'
+                                  : isSelectedTarget
+                                  ? 'ring-2 ring-[#38bdf8] scale-105'
+                                  : isNearestTarget
+                                  ? 'ring-2 ring-[#f87171]'
+                                  : isPotentialTarget
+                                  ? 'ring-1.5 ring-[#f87171]/80'
                                   : combatant.type === 'enemy'
-                                  ? 'ring-2 ring-red-500/80 shadow-md shadow-red-950/80'
-                                  : 'ring-2 ring-blue-400/80 shadow-md shadow-blue-950/80'
+                                  ? 'ring-1.5 ring-[#ef4444]/80'
+                                  : 'ring-1.5 ring-[#38bdf8]/80'
                               } ${combatant.currentHp <= 0 ? 'opacity-40 grayscale' : ''}`}
                             >
+                              {/* Pulsing targeting reticle dashed border for potential targets */}
+                              {isPotentialTarget && combatant.currentHp > 0 && (
+                                <div
+                                  className={`absolute -inset-1 rounded-full pointer-events-none transition-all ${
+                                    isSelectedTarget
+                                      ? 'border-2 border-[#38bdf8] border-dashed'
+                                      : isNearestTarget
+                                      ? 'border-2 border-[#f87171] border-dotted'
+                                      : 'border border-[#f87171]/60 border-dashed'
+                                  }`}
+                                />
+                              )}
                               <img
                                 src={combatant.avatar}
                                 alt={combatant.name}
                                 className="w-full h-full rounded-full object-cover bg-slate-950 pointer-events-none"
                               />
 
-                              {/* Ping halo for active turn */}
-                              {isActiveTurn && (
-                                <div className="absolute -inset-1 rounded-full bg-amber-400/35 animate-ping pointer-events-none" />
-                              )}
-
                               {/* Skull overlay if defeated */}
                               {combatant.currentHp <= 0 && (
                                 <div className="absolute inset-0 bg-black/60 rounded-full flex items-center justify-center">
-                                  <Skull className="w-5 h-5 text-red-500 animate-pulse" />
+                                  <Skull className="w-5 h-5 text-red-500" />
                                 </div>
                               )}
 
@@ -965,9 +1347,9 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                               {combatant.tempHp && combatant.tempHp > 0 ? (
                                 <span
                                   title={`Puntos de Vida Temporales: +${combatant.tempHp}`}
-                                  className="absolute -top-1.5 -left-1.5 z-35 bg-cyan-500 text-slate-950 font-black text-[7.5px] sm:text-[8px] px-1 py-0.2 rounded-full border border-cyan-200 shadow flex items-center gap-0.5"
+                                  className="absolute -top-1.5 -left-1.5 z-35 bg-[#0284c7] text-white font-black text-[7.5px] sm:text-[8px] px-1 py-0.2 rounded-full border border-sky-300 shadow flex items-center gap-0.5"
                                 >
-                                  <Shield className="w-2 h-2 fill-slate-950" />
+                                  <Shield className="w-2 h-2 fill-white" />
                                   <span>+{combatant.tempHp}</span>
                                 </span>
                               ) : null}
@@ -976,7 +1358,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                               {combatant.isConcentrating && (
                                 <span
                                   title={`${combatant.name} está concentrado/a en un hechizo`}
-                                  className="absolute -top-2 -right-1 z-35 bg-purple-950 text-amber-300 font-mono text-[7px] font-black px-1.5 py-0.2 rounded-full border border-purple-400 shadow flex items-center gap-0.5 animate-pulse"
+                                  className="absolute -top-2 -right-1 z-35 bg-[#251f14] text-[#e5a93c] font-mono text-[7px] font-black px-1.5 py-0.2 rounded-full border border-[#5c441c] shadow flex items-center gap-0.5"
                                 >
                                   <span>🧘 Conc.</span>
                                 </span>
@@ -986,7 +1368,7 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                               {(isDMView || combatant.type === 'player') && combatant.damageResistances && combatant.damageResistances.length > 0 && (
                                 <span
                                   title={`Resistencias: ${combatant.damageResistances.join(', ')}`}
-                                  className="absolute -bottom-1 -left-1 z-35 bg-slate-950 text-amber-300 font-mono text-[7px] px-1 rounded-full border border-amber-600 shadow"
+                                  className="absolute -bottom-1 -left-1 z-35 bg-[#171922] text-[#e5a93c] font-mono text-[7px] px-1 rounded-full border border-[#3b3220] shadow"
                                 >
                                   🛡️½
                                 </span>
@@ -997,24 +1379,24 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
                                 <button
                                   onClick={(e) => startTargeting(combatant, e)}
                                   title="ATACAR (apuntar flecha hacia el objetivo)"
-                                  className="absolute -bottom-1 -right-1 p-0.5 bg-gradient-to-br from-red-600 to-amber-500 hover:from-red-500 hover:to-amber-400 text-white rounded-full shadow-lg border border-slate-950 transition-transform active:scale-90 flex items-center justify-center cursor-pointer z-30"
+                                  className="absolute -bottom-1 -right-1 p-1 bg-[#e5a93c] hover:bg-[#d97706] text-[#0d0e12] rounded-full shadow border border-[#171922] transition-colors flex items-center justify-center cursor-pointer z-30"
                                 >
-                                  <Swords className="w-3 h-3" />
+                                  <Swords className="w-2.5 h-2.5 text-[#0d0e12]" />
                                 </button>
                               )}
                             </div>
 
                             {/* Active Turn Floating Crown Tag */}
                             {isActiveTurn && (
-                              <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-40 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-[7.5px] px-1.5 py-0.2 rounded-full uppercase tracking-wider shadow-lg flex items-center gap-0.5 animate-bounce pointer-events-none whitespace-nowrap">
-                                <Sparkles className="w-2.5 h-2.5 fill-slate-950" />
+                              <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-40 bg-[#e5a93c] text-[#0d0e12] font-black text-[7.5px] px-1.5 py-0.2 rounded font-mono uppercase tracking-wider flex items-center gap-0.5 pointer-events-none whitespace-nowrap shadow">
+                                <Sparkles className="w-2.5 h-2.5 text-[#0d0e12]" />
                                 <span>TURNO</span>
                               </div>
                             )}
 
                             {/* Mini Name Label & Health Status: Absolutely positioned at bottom so it DOES NOT disturb vertical centering */}
                             <div className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 flex flex-col items-center z-30 pointer-events-none">
-                              <div className="px-1 py-0 rounded-full bg-slate-950/90 border border-white/15 max-w-[50px] sm:max-w-[56px] text-[7.5px] sm:text-[8px] font-bold text-slate-200 truncate text-center shadow">
+                              <div className="px-1 py-0 rounded bg-[#10121a] border border-[#232737] max-w-[50px] sm:max-w-[56px] text-[7.5px] sm:text-[8px] font-bold text-slate-200 truncate text-center shadow">
                                 {combatant.name.split(' ')[0]}
                               </div>
                               {/* Mini Health Bar representation - Solo visible para el DM o para el propio jugador asignado */}
@@ -1029,16 +1411,16 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
 
                                 return (
                                   <div
-                                    className="w-9 sm:w-11 h-1.5 mt-0.5 bg-[#090b10] rounded-full overflow-hidden border border-white/20 shadow-sm"
+                                    className="w-9 sm:w-11 h-1.5 mt-0.5 bg-[#090b10] rounded-full overflow-hidden border border-[#232737]"
                                     title={`Salud: ${safeCurrent} / ${safeMax} (${hpPercent}%)`}
                                   >
                                     <div
                                       className={`h-full transition-all duration-300 ${
                                         hpPercent > 50
-                                          ? 'bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.8)]'
+                                          ? 'bg-[#10b981]'
                                           : hpPercent > 25
-                                          ? 'bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.8)]'
-                                          : 'bg-red-500 animate-pulse shadow-[0_0_4px_rgba(239,68,68,0.8)]'
+                                          ? 'bg-[#e5a93c]'
+                                          : 'bg-[#ef4444]'
                                       }`}
                                       style={{ width: `${hpPercent}%` }}
                                     />
@@ -1239,6 +1621,19 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
 
           {/* Unfolded Action Options Buttons */}
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+            {/* Quick-select Nearest Enemy inside Unfolded Menu */}
+            {nearestEnemyTarget && (
+              <button
+                type="button"
+                onClick={handleSelectNearestEnemy}
+                className="px-3 py-2 bg-gradient-to-r from-rose-950 via-red-950 to-rose-900 hover:from-rose-900 hover:to-red-800 border border-rose-500/50 text-rose-200 hover:text-white font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 shadow transition-all cursor-pointer ring-1 ring-rose-500/30"
+                title={`Fijar como objetivo al enemigo más cercano (${nearestEnemyTarget.name})`}
+              >
+                <Crosshair className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
+                <span>Enemigo más cercano ({nearestEnemyDistance?.feet} ft)</span>
+              </button>
+            )}
+
             {/* 1. ATACAR: Despliega la flecha estilo Hearthstone */}
             <button
               onClick={(e) => startTargeting(unfoldedCombatant, e)}
@@ -1347,15 +1742,41 @@ export const JRPGEncounterArena: React.FC<JRPGEncounterArenaProps> = ({
       <div
         className={`relative z-20 px-3 py-2 ${currentEnv.groundClass} flex flex-wrap items-center justify-between text-[11px] gap-2`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-slate-400">Objetivo seleccionado:</span>
           {(() => {
             const current = combatants.find((c) => c.id === selectedTargetId);
-            if (!current)
-              return <span className="text-slate-500 italic">Ninguno (haz clic en un token)</span>;
+            if (!current) {
+              return (
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 italic">Ninguno</span>
+                  {nearestEnemyTarget && (
+                    <button
+                      type="button"
+                      onClick={handleSelectNearestEnemy}
+                      className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-600/50 flex items-center gap-1 cursor-pointer transition-colors"
+                      title={`Fijar como objetivo al enemigo más cercano (${nearestEnemyTarget.name})`}
+                    >
+                      <Crosshair className="w-3 h-3 text-rose-400" />
+                      <span>Fijar más cercano ({nearestEnemyDistance?.feet} ft)</span>
+                    </button>
+                  )}
+                </div>
+              );
+            }
+            const dist = currentActor && current.id !== currentActor.id ? getDistanceBetween(currentActor, current) : null;
             return (
-              <span className="font-bold text-amber-300 flex items-center gap-1">
-                {current.name} ({current.type === 'enemy' ? 'Enemigo' : 'Aliado'})
+              <span className="font-bold text-amber-300 flex items-center gap-1.5 flex-wrap">
+                <span>{current.name}</span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  ({current.type === 'enemy' ? 'Enemigo' : 'Aliado'})
+                </span>
+                {dist && (
+                  <span className="text-[10px] text-cyan-300 font-mono bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-600/50 flex items-center gap-1">
+                    <Crosshair className="w-2.5 h-2.5 text-cyan-400" />
+                    <span>{dist.feet} ft ({dist.squares} casillas de {currentActor?.name})</span>
+                  </span>
+                )}
                 {(isDMView || current.type === 'player') && current.damageResistances && current.damageResistances.length > 0 && (
                   <span className="text-[10px] text-amber-400 font-mono bg-black/40 px-1 rounded">
                     [Resist: {current.damageResistances.join(', ')}]
